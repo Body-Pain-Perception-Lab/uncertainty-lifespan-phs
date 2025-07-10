@@ -1,0 +1,12 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+.rds
+.DS_Store
+discarded/
+data/discarded/
+saved_stanmodels/
+saved_stanmodels1/
+analysis/threshold/
+osf/
