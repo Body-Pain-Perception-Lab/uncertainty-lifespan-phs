@@ -1,0 +1,187 @@
+---
+title: "Figure 3"
+author: "A.G. Mitchell"
+date: "2025-05-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Load packages and data
+
+```{r setup, include=FALSE}
+# knitr::opts_chunk$set(echo = TRUE)
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(bayesplot, brms, cmdstanr, gghalves, ggpol, ggpubr,
+                 gridExtra, wesanderson, RColorBrewer, Rmisc, cowplot, HDInterval,LRO.utilities,tidyverse)
+
+functions = list.files(file.path(here::here('analysis/functions')), full.names = TRUE)
+sapply(functions, source)
+
+ageDat <- read.csv(here::here(file.path("data","phs-ageing_compiled-filtered.csv"))) %>% filter(catch == 0)
+
+```
+
+
+# Load models:
+```{r}
+# Retrieve the OSF authentication token if the file exists
+osf_file_path <- here::here("osf","osf.txt")
+
+if (file.exists(osf_file_path)) {
+  osf_token <- read_lines(osf_file_path)[1]
+} else {
+  stop("OSF token file does not exist!")
+}
+
+get_models(osf_token)
+
+model1 <- readRDS(here::here("saved_stanmodels","model1.rds"))
+model2 <- readRDS(here::here("saved_stanmodels","model2.rds"))
+
+```
+
+# Extract information about the parameters
+
+```{r}
+## Age parameters
+
+draws_age = as_draws_df(model2$draws("mus_age")) %>% select(-contains(".")) %>% 
+  rename_with(~c("Threshold_age","RT_age","Conf_age")) %>% 
+  dplyr::mutate(draw = 1:n(),
+         Threshold_age = Threshold_age*100) %>% 
+  dplyr::mutate(
+    Threshold_age = Threshold_age/sd(ageDat$age),
+    RT_age = RT_age/sd(ageDat$age),
+    Conf_age = Conf_age/sd(ageDat$age)
+  ) %>% 
+  pivot_longer(-draw)
+  
+
+#BF3 = LRO.utilities::savage_dickey(draws_age %>% filter(name == "Conf_age") %>% .$value, rnorm(8000,0,0.3), 0)$BF01
+#BF1 = LRO.utilities::savage_dickey(draws_age %>% filter(name == "Threshold_age") %>% .$value, rnorm(8000,0,0.3), 0)$BF01
+#BF2 = LRO.utilities::savage_dickey(draws_age %>% filter(name == "RT_age") %>% .$value, rnorm(8000,0,0.3), 0)$BF01
+
+
+age_results = draws_age %>% group_by(name) %>% 
+  dplyr::summarize(mean = mean(value),
+            median = median(value),
+            hdi95_l = hdi(value)[1],
+            hdi95_h = hdi(value)[2],
+            prop_above_0 = sum(value > 0)/n()
+            )
+```
+
+
+```{r}
+# Other parameters
+
+draws_other = as_draws_df(model2$draws(c("mus_rt[2]","mus_rt[3]","mus_conf[2]","mus_conf[3]"))) %>% select(-contains(".")) %>% 
+  rename_with(~c("prob_RT","TC_RT","prob_conf","TC_conf")) %>% dplyr::mutate(draw = 1:n()) %>% 
+  pivot_longer(-draw)
+
+# BF1 = LRO.utilities::savage_dickey(draws_other %>% filter(name == "prob_RT") %>% .$value, rnorm(8000,2.5,1), 0)$BF01
+# BF2 = LRO.utilities::savage_dickey(draws_other %>% filter(name == "TC_RT") %>% .$value, rnorm(8000,0,1), 0)$BF01
+# BF3 = LRO.utilities::savage_dickey(draws_other %>% filter(name == "prob_conf") %>% .$value, rnorm(8000,-2,1), 0)$BF01
+# BF4 = LRO.utilities::savage_dickey(draws_other %>% filter(name == "TC_conf") %>% .$value, rnorm(8000,0,1), 0)$BF01
+
+
+slope_results = draws_other %>% group_by(name) %>% 
+  dplyr::summarize(mean = mean(value),
+            median = median(value),
+            hdi95_l = hdi(value)[1],
+            hdi95_h = hdi(value)[2],
+            prop_above_0 = sum(value > 0)/n()
+            ) 
+  # mutate(BF01 = c(BF2,BF4,BF1,BF3))
+```
+
+
+# Model comparison
+```{r}
+
+model1_loo = loo(model1$draws("log_lik"), moment_match = TRUE)
+
+model2_loo = loo(model2$draws("log_lik"), moment_match = TRUE)
+
+# 
+loo = loo::loo_compare(list(model1 = model1_loo, model2 = model2_loo))
+```
+
+
+# Save the objects for reporting
+
+```{r}
+saveRDS(list(model1_loo,model2_loo),here::here("manuscript","objects","loo_models.rds"))
+
+saveRDS(loo,here::here("manuscript","objects","loo_results.rds"))
+saveRDS(age_results,here::here("manuscript","objects","age_results.rds"))
+saveRDS(slope_results,here::here("manuscript","objects","slope_results.rds"))
+```
+
+
+## marginal mean differences:
+```{r}
+# Get all draws for the main parameters:
+
+group_draws = as_draws_df(model2$draws(c("mus_phs","sigmas_phs",
+                                      "mus_rt","sigmas_rt",
+                                      "mus_conf","sigmas_conf","mus_age")))
+
+draw_id = sample(1:4000,4000)
+
+# make parameter data-frame with model2 predictions for TC = 0 (nox) and P = 0 (nop)
+
+params = group_draws %>% select(-contains(".")) %>% 
+  dplyr::mutate(draw = 1:n()) %>% 
+  filter(draw %in% draw_id) %>% 
+  mutate(x = list(seq(0,100,by = 1))) %>% 
+  unnest(x) %>% 
+  mutate(age_z = 0) %>% 
+  rowwise() %>% 
+  mutate(p = prob_func(x,exp(`mus_phs[1]`+ `mus_age[1]` * age_z), exp(`mus_phs[2]`),
+                       inv_logit_scaled(`mus_phs[3]`)/2,inv_logit_scaled(`mus_phs[4]`)/2),
+         rtP_nop = exp(`mus_rt[1]`+ `mus_age[2]` * age_z +`mus_rt[2]`*((0)) + 
+           `mus_rt[3]` * x + (0.2+brms::inv_logit_scaled(`mus_rt[5]`)*(0.4-0.2))),
+         cP_nop = brms::inv_logit_scaled(`mus_conf[1]`+ `mus_age[3]` * age_z+`mus_conf[2]`*((0))+ `mus_conf[3]` * x)
+         ) %>% 
+          mutate(p = prob_func(x,exp(`mus_phs[1]`+ `mus_age[1]` * age_z), exp(`mus_phs[2]`),
+                       inv_logit_scaled(`mus_phs[3]`)/2,inv_logit_scaled(`mus_phs[4]`)/2),
+         rtP_nox = exp(`mus_rt[1]`+ `mus_age[2]` * age_z +`mus_rt[2]`*((p)) + 
+           0 * x + (0.2+brms::inv_logit_scaled(`mus_rt[5]`)*(0.4-0.2))),
+         cP_nox = brms::inv_logit_scaled(`mus_conf[1]`+ `mus_age[3]` * age_z+`mus_conf[2]`*((p))+ `mus_conf[3]` * 0)
+         )
+
+# calculate the differences in the different response types (response time and confidence ratings) for each of the two combinations (TC = 0 | P = 0)
+
+marginal_difference = params %>% filter(x == 0 | x == 100) %>% 
+  dplyr::select(rtP_nop,x,cP_nop,rtP_nox,cP_nox) %>% 
+  pivot_wider(names_from = x, values_from = c(rtP_nop,cP_nop,rtP_nox,cP_nox)) %>% 
+  unnest() %>% 
+  dplyr::summarize(mean_rt_nop = mean(rtP_nop_100 - rtP_nop_0),
+            q5_rt_nop = hdi(rtP_nop_100 - rtP_nop_0, 0.95)[1],
+            q95_rt_nop = hdi(rtP_nop_100 - rtP_nop_0, 0.95)[2],
+            
+            mean_cp_nop = mean(cP_nop_100 - cP_nop_0),
+            q5_cp_nop = hdi(cP_nop_100 - cP_nop_0, 0.95)[1],
+            q95_cp_nop = hdi(cP_nop_100 - cP_nop_0, 0.95)[2],
+            
+            mean_rt_nox = mean(rtP_nox_100 - rtP_nox_0),
+            q5_rt_nox = hdi(rtP_nox_100 - rtP_nox_0, 0.95)[1],
+            q95_rt_nox = hdi(rtP_nox_100 - rtP_nox_0, 0.95)[2],
+            
+            mean_cp_nox = mean(cP_nox_100 - cP_nox_0),
+            q5_cp_nox = hdi(cP_nox_100 - cP_nox_0, 0.95)[1],
+            q95_cp_nox = hdi(cP_nox_100 - cP_nox_0, 0.95)[2],
+            )%>%
+  pivot_longer(cols = everything(),
+               names_to = c(".value", "parameter"),
+               names_pattern = "(mean|q5|q95)_(.*)") %>%
+  dplyr::select(parameter, mean, q5, q95)
+
+# Save for reporting
+
+saveRDS(marginal_difference,here::here("manuscript","objects","marginal_difference.rds"))
+```
+

@@ -1,0 +1,409 @@
+---
+title: "Figure 3"
+author: "A.G. Mitchell"
+date: "2025-05-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Load packages and functions
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(bayesplot, brms, cmdstanr, ggdist, gghalves, ggpol, ggpubr, ggridges,
+                 gridExtra, wesanderson, RColorBrewer, Rmisc, 
+                 readr, cowplot, patchwork, tidyverse)
+  
+# functions
+functions = list.files(file.path(here::here("analysis","functions")), full.names = TRUE)
+sapply(functions, source)
+```
+
+# Load data
+
+```{r load_data}
+#df <- read_csv("/mnt/slow_scratch/ageing-and-neuropathy/phs-ageing_compiled-filtered.csv")
+df <- read_csv(file.path(here::here("data", "phs-ageing_compiled-filtered.csv"))) %>% filter(catch == 0)
+
+pal_pg <- brewer.pal(11, 'PRGn')
+pal_gr <- brewer.pal(9, 'Greens')
+pal_pu <- brewer.pal(9, 'BuPu')
+```
+
+# Load models:
+```{r}
+# Retrieve the OSF authentication token if the file exists
+osf_file_path <- here::here("osf","osf.txt")
+
+if (file.exists(osf_file_path)) {
+  osf_token <- read_lines(osf_file_path)[1]
+} else {
+  stop("OSF token file does not exist!")
+}
+
+get_models(osf_token)
+
+model1 <- readRDS(here::here("saved_stanmodels","model1.rds"))
+model2 <- readRDS(here::here("saved_stanmodels","model2.rds"))
+
+```
+
+
+# generate model predictions for young (age = 20) and old (age = 80) for P(PHS) Response times and confidence ratings
+
+```{r data}
+agez_20 = (20-mean(df$age))/sd(df$age)
+agez_80 = (80-mean(df$age))/sd(df$age)
+
+
+group_draws = as_draws_df(model2$draws(c("mus_phs","sigmas_phs",
+                                      "mus_rt","sigmas_rt",
+                                      "mus_conf","sigmas_conf","mus_age")))
+
+#get 200 random ids for the draws we select to plot.
+draw_id = sample(1:4000,4000)
+
+# make parameter data-frame
+params = group_draws %>% 
+  dplyr::select(-contains(".")) %>% 
+  dplyr::mutate(draw = 1:n()) %>% 
+  filter(draw %in% draw_id) %>% 
+  dplyr::mutate(x = list(seq(0,100,by = 1))) %>% 
+  unnest(x) %>% 
+  dplyr::mutate(age_z = list(c(agez_20, agez_80))) %>% 
+  unnest(age_z) %>% 
+  rowwise() %>% 
+  dplyr::mutate(p = prob_func(x,exp(`mus_phs[1]`+ `mus_age[1]` * age_z), exp(`mus_phs[2]`),
+                       inv_logit_scaled(`mus_phs[3]`)/2,inv_logit_scaled(`mus_phs[4]`)/2),
+         rtP = `mus_rt[1]`+ `mus_age[2]` * age_z +`mus_rt[2]`*((p)) + 
+           `mus_rt[3]` * x + (0.2+brms::inv_logit_scaled(`mus_rt[5]`)*(0.4-0.2)),
+         cP = `mus_conf[1]`+ `mus_age[3]` * age_z+`mus_conf[2]`*((p))+ `mus_conf[3]` * x,
+         )%>% 
+  dplyr::mutate(real_age = age_z * sd(df$age) + mean(df$age)) %>%
+  dplyr::mutate(age_label = case_when(
+    age_z < 0 ~ paste0("Age ", round(real_age), ""),
+    age_z > 1 ~ paste0("Age ", round(real_age), "")
+  )) %>%
+  dplyr::mutate(age_label = factor(age_label, levels = unique(age_label)),
+         rt = exp(rtP),
+         conf = brms::inv_logit_scaled(cP) * 100)
+```
+
+# make figures 
+```{r fig.height=7.2,fig.width=4.5}
+# Probability figure
+prob = params %>%
+  dplyr::group_by(x, age_label) %>%
+  dplyr::summarise(
+    mean = mean(p),
+    q5 = quantile(p, 0.05),
+    q95 = quantile(p, 0.95),
+    q10 = quantile(p, 0.10),
+    q90 = quantile(p, 0.90),
+    q20 = quantile(p, 0.20),
+    q80 = quantile(p, 0.80),
+    .groups = "drop"
+  ) %>%
+  
+  ggplot(aes(x = x/100, y = mean, col = age_label, fill = age_label)) +
+  geom_line(show.legend = F, linewidth = 1.5) +
+  geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.1, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.25, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q20, ymax = q80), alpha = 0.4, color = NA, show.legend = F) +
+  scale_y_continuous(name = "P(PHS)", limits = c(0,1), breaks = c(0,0.5,1),
+                     labels = c(" 0","  .5"," 1")) +
+  scale_x_continuous(name = '', breaks = c(0,0.25,0.50,0.75,1.00), 
+                     labels = c("0",".25",".50",".75","1"))+
+  scale_colour_manual(values = c(pal_pu[4], pal_pu[9])) +
+  scale_fill_manual(values = c(pal_pu[4], pal_pu[9])) +
+  theme_classic() +
+  labs(color = "Age", fill = "Age")+
+  theme(legend.title = element_blank(),
+        legend.position = 'none',
+        axis.title = element_text(size = 14),
+        axis.text.y = element_text(size = 12.5),
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        legend.text = element_text(size = 11),
+        panel.border = element_rect(fill = NA, linewidth = 1.2))
+
+
+# Response time figure
+
+rt = params %>%
+  dplyr::group_by(x, age_label) %>%
+  dplyr::summarise(
+    mean = mean(rtP),
+    q5 = quantile(rtP, 0.05),
+    q95 = quantile(rtP, 0.95),
+    q10 = quantile(rtP, 0.10),
+    q90 = quantile(rtP, 0.90),
+    q20 = quantile(rtP, 0.20),
+    q80 = quantile(rtP, 0.80),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = x/100, y = mean, col = age_label, fill = age_label)) +
+  geom_line(show.legend = F, linewidth = 1.5) +
+  geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.1, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.25, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q20, ymax = q80), alpha = 0.4, color = NA, show.legend = F) +
+  scale_y_continuous(name = "Log response time", limits = c(-2.5,1),
+                     breaks = c(-2,-1,0,1), labels = c(' -2',' -1','0','1')) +
+  scale_x_continuous(name = '', breaks = c(0,0.25,0.50,0.75,1.00), 
+                     labels = c("0",".25",".50",".75","1"))+
+  scale_colour_manual(values = c(pal_pu[4], pal_pu[9])) +
+  scale_fill_manual(values = c(pal_pu[4], pal_pu[9])) +
+  theme_classic() +
+  labs(color = "Age", fill = "Age") +
+  theme(legend.title = element_blank(),
+        legend.position = 'none',
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        legend.text = element_text(size = 11),
+        panel.border = element_rect(fill = NA, linewidth = 1.2))
+
+# Confidence rating figure
+conf = params %>%
+  dplyr::group_by(x, age_label) %>%
+  dplyr::summarise(
+    mean = mean(conf),
+    q5 = quantile(conf, 0.05),
+    q95 = quantile(conf, 0.95),
+    q10 = quantile(conf, 0.10),
+    q90 = quantile(conf, 0.90),
+    q20 = quantile(conf, 0.20),
+    q80 = quantile(conf, 0.80),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = x/100, y = mean, col = age_label, fill = age_label)) +
+  geom_line(show.legend = T, linewidth = 1.5) +
+  geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.1, color = NA) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.25, color = NA,) +
+  geom_ribbon(aes(ymin = q20, ymax = q80), alpha = 0.4, color = NA) +
+  scale_y_continuous(name =  "Confidence (VAS)", limits = c(0, 100)) +
+  scale_x_continuous(name = 'Thermal contrast', breaks = c(0,0.25,0.50,0.75,1.00), 
+                     labels = c("0",".25",".50",".75","1"))+
+  scale_colour_manual(values = c(pal_pu[4], pal_pu[9])) +
+  scale_fill_manual(values = c(pal_pu[4], pal_pu[9])) +
+  theme_classic() +
+  labs(color = "Age", fill = "Age") +
+  theme(legend.title = element_blank(),
+        legend.position = c(.22,.17),
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        legend.text = element_text(size = 11),
+        panel.border = element_rect(fill = NA, linewidth = 1.2))
+
+```
+
+# Collect draws from age parameters and plot thsee
+
+```{r fig.height=7.2,fig.width=4.5}
+age_params = group_draws = as_draws_df(model2$draws(c("mus_age")))
+
+age_params_plot = age_params %>% 
+  dplyr::select(-contains(".")) %>% 
+  dplyr::rename_with(~c("Age_Threshold","Age_RT","Confidence")) %>%
+  dplyr::mutate(Age_Threshold = Age_Threshold * 100) %>% 
+  pivot_longer(everything()) %>% 
+  dplyr::mutate(val2 = (value/sd(df$age)))
+
+# make individual plot for prob, rt and conf as above
+prob_dens = ggplot(data = age_params_plot %>% 
+                     filter(name == "Age_Threshold"),
+                   aes(x = val2)) +
+  geom_histogram(fill = pal_pu[9], linewidth = 0.5, alpha = .6) +
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 1) +
+  #
+  scale_x_continuous(name = '', limits = c(-3.5, 3.5), breaks = c(-3,-1,0,1,3),
+                     labels = c('-3','-1','0','1','3')) +
+  scale_y_continuous(name = 'Count', limits = c(0,2500)) +
+  #labs(title = 'PHS threshold') +
+  theme_classic() +
+  theme(axis.title = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(size = 13, hjust = 0.5),
+        legend.text = element_text(size = 10),
+        panel.border = element_rect(fill = NA, linewidth = 1.2))
+
+rt_dens = ggplot(data = age_params_plot %>% filter(name == "Age_RT"),
+                   aes(x = val2)) +
+  geom_histogram(fill = pal_pu[9], linewidth = 0.5, alpha = .6) +
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 1) +
+  scale_x_continuous(name = '', limits = c(-.035, .035), breaks = c(-.03,-.01,0,.01,.03),
+                     labels = c('-.03','-.01','0','.01','.03')) +
+  scale_y_continuous(name = 'Count', limits = c(0,2500)) +
+  #labs(title = 'Response time') +
+  theme_classic() +
+  theme(axis.title = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(size = 13, hjust = 0.5),
+        legend.text = element_text(size = 10),
+        panel.border = element_rect(fill = NA, linewidth = 1.2))
+
+conf_dens = ggplot(data = age_params_plot %>% filter(name == "Confidence"),
+                   aes(x = val2)) +
+  geom_histogram(fill = pal_pu[9], linewidth = 0.5, alpha = .6) +
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 1) +
+  scale_x_continuous(name = 'Parameter values', limits = c(-.035, .035), breaks = c(-.03,-.01,0,.01,.03),
+                     labels = c('-.03','-.01','0','.01','.03')) +
+  scale_y_continuous(name = 'Count', limits = c(0,2500)) +
+  #labs(title = 'Confidence') +
+  theme_classic() +
+  theme(axis.title = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title.y = element_blank(),
+        plot.title = element_text(size = 13, hjust = 0.5),
+        legend.text = element_text(size = 10),
+        panel.border = element_rect(fill = NA, linewidth = 1.2))
+
+```
+
+# playing with threshold over age
+```{r}
+subject_draws = as_draws_df(model2$draws(c("a_phs","b_phs","g_phs","l_phs",
+                                           "a_rt","b_rt","b1_rt","ndt",
+                                           "a_conf","b_conf","b1_conf"))) %>%
+                select(-contains("."))
+
+#get 200 random ids for the draws we select to plot.
+draw_id = sample(1:4000,4000)
+params_subj = subject_draws %>%
+  dplyr::mutate(draw = 1:n()) %>%
+  filter(draw %in% draw_id) %>%
+  pivot_longer(-draw) %>%
+  dplyr::mutate(
+    subject = str_extract(name, "\\[\\d+\\]") %>% str_remove_all("\\[|\\]"),
+    name = str_remove(name, "\\s*\\[\\d+\\]")) %>%
+  pivot_wider(names_from = "name",values_from = "value")
+
+dq = inner_join(params_subj, df %>%
+                  mutate(subject = as.character(as.numeric(as.factor(subject)))) %>%
+                  select(subject,age) %>% distinct()) 
+```
+
+```{r}
+prob_age <- dq %>%
+  dplyr::group_by(subject,age) %>% 
+  dplyr::summarise(mean = mean(a_phs),
+         q5 = quantile(a_phs, .16),
+         q95 = quantile(a_phs, .84)) %>%  
+  ggplot(aes(y = mean/100,
+             ymin = q5/100,
+             ymax = q95/100,
+             x = age,
+             colour = age,
+             fill = age,
+             group = as.factor(age))) +
+  geom_pointrange(shape = 21, size = 0.3, linewidth = .7, alpha = .75,
+                  position = position_jitter(width = .3)) +
+  scale_colour_stepsn(colours = pal_pu[3:9], breaks = seq(20, 80, by = 6)) +
+  scale_fill_stepsn(colours = pal_pu[3:9], breaks = seq(20, 80, by = 6)) +
+  scale_x_continuous(name = '', limits = c(20,80)) +
+  scale_y_continuous(name = 'PHS threshold', limits = c(0,1.25),
+                     breaks = c(0,0.4,0.8,1.2),
+                     labels = c("0","0.4","0.8","1.2")) +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.title = element_text(size = 14),
+        axis.text.y = element_text(size = 12.5),
+        axis.text.x = element_text(size = 12),
+        plot.title = element_text(size = 13, hjust = 0.5),
+        panel.border = element_rect(fill = NA, linewidth = 1.2))
+
+rt_age <- dq %>% 
+  dplyr::group_by(subject,age) %>% 
+  dplyr::summarise(mean = mean(a_rt),
+         q5 = quantile(a_rt, .16),
+         q95 = quantile(a_rt, .84)) %>%  
+  ggplot(aes(y = mean,
+             ymin = q5,
+             ymax = q95,
+             x = age,
+             colour = age,
+             fill = age,
+             group = as.factor(age))) +
+  geom_pointrange(shape = 21, size = 0.4, linewidth = .7, alpha = .75,
+                  position = position_jitter(width = .3)) +
+  scale_colour_stepsn(colours = pal_pu[3:9], breaks = seq(20, 80, by = 6)) +
+  scale_fill_stepsn(colours = pal_pu[3:9], breaks = seq(20, 80, by = 6)) +
+  scale_x_continuous(name = '', limits = c(20,80)) +
+  scale_y_continuous(name = 'Log response time', limits = c(-2.5,1),
+                     breaks =c(-2,-1,0,1), labels = c(' -2',' -1','0','1')) +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.title = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 13, hjust = 0.5),
+        panel.border = element_rect(fill = NA, linewidth = 1.2))
+
+conf_age <- dq %>% group_by(subject,age) %>% 
+  dplyr::mutate(conf = brms::inv_logit_scaled(a_conf) * 100) %>% 
+  dplyr::summarise(mean = mean(conf),
+         q5 = quantile(conf, .16),
+         q95 = quantile(conf, .84)) %>%  
+  ggplot(aes(y = mean,
+             ymin = q5,
+             ymax = q95,
+             x = age,
+             colour = age,
+             fill = age,
+             group = as.factor(age))) +
+  geom_pointrange(shape = 21, size = 0.4, linewidth = .7, alpha = .75,
+                  position = position_jitter(width = .3)) +
+  scale_colour_stepsn(colours = pal_pu[3:9], breaks = seq(20, 80, by = 6)) +
+  scale_fill_stepsn(colours = pal_pu[3:9], breaks = seq(20, 80, by = 6)) +
+  scale_x_continuous(name = 'Age', limits = c(20,80)) +
+  scale_y_continuous(name = 'Confidence (VAS)', limits = c(0,100)) +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.title = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        plot.title = element_text(size = 13, hjust = 0.5),
+        panel.border = element_rect(fill = NA, linewidth = 1.2))
+```
+
+# Combine plots and save
+```{r fig.height=7.2,fig.width=8}
+# arrange all figures together
+fig4.1 <- (prob / rt / conf) + plot_layout(heights = c(1,1,1)) +
+  plot_annotation(title = "Group means") &
+  theme(plot.title = element_text(face = "bold", size = 13, hjust = 0.60))
+
+fig4.2 <- (prob_age / rt_age / conf_age) + plot_layout(heights = c(1,1,1)) +
+  plot_annotation(title = "Subject means") &
+  theme(plot.title = element_text(face = "bold", size = 13, hjust = 0.60))
+
+fig4.3 <- (prob_dens / rt_dens / conf_dens) + plot_layout(heights = c(1,1,1)) +
+  plot_annotation(title = "Effect of age") &
+  theme(plot.title = element_text(face = "bold", size = 13, hjust = 0.5))
+
+figure4 <- ggarrange(fig4.1, NA, fig4.2, NA, fig4.3,
+                     ncol = 5, nrow = 1,
+                     widths = c(1.1,.02,1.1,.06,.8),
+                     labels = c('A.',NA,'B.',NA,'C.'))
+figure4
+
+ggsave(file.path(here::here('manuscript', 'figures', 'figure4.png')), figure4, device = NULL,
+       width = 9, height = 8, dpi = 600)
+
+# ggsave(file.path(here::here('manuscript', 'figures', 'figure4.tiff')), figure4, device = NULL,
+#        width = 6, height = 9, dpi = 600)
+```
+
+

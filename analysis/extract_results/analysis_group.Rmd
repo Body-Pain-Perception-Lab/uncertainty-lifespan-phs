@@ -1,0 +1,166 @@
+---
+title: "PHS ageing study data analyses"
+author: "Jesper F. E."
+date: "2024-10-24"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Load packages and data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(bayesplot, brms, cmdstanr, extraDistr, furrr, ggpubr, ggplot2, pracma, 
+               RColorBrewer, tidyverse)
+
+filtDat <- read_csv(here::here("data","phs-ageing_compiled-filtered.csv")) %>% filter(catch == 0)
+dir =  here::here()
+functions = list.files(file.path(dir, 'analysis/functions'), full.names = TRUE)
+sapply(functions, source)
+
+```
+
+
+# run the full model without duration:
+
+```{r}
+
+filtDat$z_age = scale(filtDat$age)[,1]
+
+filtDat = filtDat %>% drop_na()
+
+filtDat <- filtDat %>% arrange(subject)
+
+filtDat$S_ids = as.numeric(as.factor(filtDat$subject))
+
+filtDat <- filtDat[order(filtDat$subject), ]
+
+#filtDat = filtDat[-c(983, 1630, 1668, 3626),]
+
+# Create starts and ends
+rle_subjects <- rle(filtDat$subject)
+ends <- cumsum(rle_subjects$lengths)
+starts <- c(1, head(ends, -1) + 1)
+
+
+
+# initiate model
+stanModel1 <- cmdstanr::cmdstan_model((here::here("analysis","stanmodels","phs-ageing_m1.stan")), force_recompile = T) #initiate model
+
+m1_fit = stanModel1$sample(data = list(N = nrow(filtDat), 
+                                      tcf = filtDat$TC,
+                                      phs = filtDat$PHS,
+                                      rt = filtDat$tempRT,
+                                      conf = filtDat$vasRating/100,
+                                      S = length(unique(filtDat$subject)),
+                                      # duration = ifelse(filtDat$duration > 0.5,1,0),
+                                      S_id = filtDat$S_ids,
+                                      starts =  starts,
+                                      ends = ends,
+                                      age_z = filtDat %>% select(subject,z_age) %>% distinct() %>%.$z_age,
+                                      min_rt = filtDat %>% group_by(subject) %>% summarize(min_rt = min(tempRT)) %>% .$min_rt),
+                        refresh = 100,
+                        iter_warmup = 2000,
+                        iter_sampling = 2000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.99,
+                        max_treedepth = 15,
+                        init = 0)
+
+m1_fit$save_object(here::here("saved_stanmodels","model1.rds"))
+
+
+
+
+# initiate model
+stanModel2 <- cmdstanr::cmdstan_model((here::here("analysis","stanmodels","phs-ageing_m2.stan")), force_recompile = T) #initiate model
+
+m2_fit = stanModel2$sample(data = list(N = nrow(filtDat), 
+                                      tcf = filtDat$TC,
+                                      phs = filtDat$PHS,
+                                      rt = filtDat$tempRT,
+                                      conf = filtDat$vasRating/100,
+                                      S = length(unique(filtDat$subject)),
+                                      # duration = ifelse(filtDat$duration > 0.5,1,0),
+                                      S_id = filtDat$S_ids,
+                                      starts =  starts,
+                                      ends = ends,
+                                      age_z = filtDat %>% select(subject,z_age) %>% distinct() %>%.$z_age,
+                                      min_rt = filtDat %>% group_by(subject) %>% summarize(min_rt = min(tempRT)) %>% .$min_rt),
+                        refresh = 100,
+                        iter_warmup = 2000,
+                        iter_sampling = 2000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.99,
+                        max_treedepth = 15,
+                        init = 0)
+
+m2_fit$save_object(here::here("saved_stanmodels","model2.rds"))
+
+
+```
+
+
+# run the full model with duration:
+
+```{r}
+
+
+# initiate model
+stanModel1 <- cmdstanr::cmdstan_model(
+  file.path(here::here("analysis","stanmodels","phs_ageing_m1_dur.stan")), force_recompile = T) #initiate model
+
+m1_fit = stanModel1$sample(data = list(N = nrow(filtDat), 
+                                      tcf = filtDat$TC,
+                                      phs = filtDat$PHS,
+                                      rt = filtDat$tempRT,
+                                      conf = filtDat$vasRating/100,
+                                      S = length(unique(filtDat$subject)),
+                                      duration = ifelse(filtDat$duration > 0.5,1,0),
+                                      S_id = filtDat$S_ids,
+                                      starts =  starts,
+                                      ends = ends,
+                                      age_z = filtDat %>% select(subject,z_age) %>% distinct() %>%.$z_age,
+                                      min_rt = filtDat %>% group_by(subject) %>% summarize(min_rt = min(tempRT)) %>% .$min_rt),
+                        refresh = 100,
+                        iter_warmup = 2000,
+                        iter_sampling = 2000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.99,
+                        max_treedepth = 15,
+                        init = 0)
+
+m1_fit$save_object(here::here("saved_stanmodels","model1_adapt_99_no_ageslope_all_duration.rds"))
+
+
+
+
+# initiate model
+stanModel2 <- cmdstanr::cmdstan_model(
+  file.path(here::here("analysis","stanmodels","phs_ageing_m2_dur.stan")), force_recompile = T) #initiate model
+
+m2_fit = stanModel2$sample(data = list(N = nrow(filtDat), 
+                                      tcf = filtDat$TC,
+                                      phs = filtDat$PHS,
+                                      rt = filtDat$tempRT,
+                                      conf = filtDat$vasRating/100,
+                                      S = length(unique(filtDat$subject)),
+                                      duration = ifelse(filtDat$duration > 0.5,1,0),
+                                      S_id = filtDat$S_ids,
+                                      starts =  starts,
+                                      ends = ends,
+                                      age_z = filtDat %>% select(subject,z_age) %>% distinct() %>%.$z_age,
+                                      min_rt = filtDat %>% group_by(subject) %>% summarize(min_rt = min(tempRT)) %>% .$min_rt),
+                        refresh = 100,
+                        iter_warmup = 2000,
+                        iter_sampling = 2000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.99,
+                        max_treedepth = 15,
+                        init = 0)
+
+m2_fit$save_object(here::here("saved_stanmodels","model2_adapt_99_no_ageslope_all_duration.rds"))
+
+
+```

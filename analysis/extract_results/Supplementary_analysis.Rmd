@@ -1,0 +1,492 @@
+---
+title: "Analyses for supplementary materials"
+author: "A.G. Mitchell"
+date: "2025-05-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+# Packages and data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(bayesplot, brms, cmdstanr, gghalves, ggpol, ggpubr,glmmTMB,
+                 gridExtra, tidyverse, wesanderson, RColorBrewer, Rmisc, cowplot, HDInterval, pals)
+
+functions = list.files(file.path(here::here('analysis/functions')), full.names = TRUE)
+sapply(functions, source)
+
+ageDat <- read.csv(here::here(file.path("data","phs-ageing_compiled-filtered.csv")))
+
+perfDat <- read.table(file = file.path(here::here("data", "EOT_data.tsv")), sep = '\t', header = TRUE)
+
+demo <- read.csv('/mnt/slow_scratch/ageing-and-neuropathy/demographics.csv')
+
+```
+
+
+
+
+# Load models:
+```{r}
+# Retrieve the OSF authentication token if the file exists
+osf_file_path <- here::here("osf","osf.txt")
+
+if (file.exists(osf_file_path)) {
+  osf_token <- read_lines(osf_file_path)[1]
+} else {
+  stop("OSF token file does not exist!")
+}
+
+get_models(osf_token)
+
+model <- readRDS(here::here("saved_stanmodels","model2.rds"))
+
+```
+
+```{r}
+
+# palettes
+pal_or <- brewer.pal(8, 'OrRd')
+pal_rd <- brewer.pal(8, 'Reds')
+pal_bl <- brewer.pal(8, 'Blues')
+pal_pu <- brewer.pal(9, 'BuPu')
+```
+
+
+# phs count by TC condition
+```{r}
+logitF <- function(p){
+  log(p/(1-p))
+      }
+ageDat2 <- ageDat %>% 
+  filter(catch == 0) %>% 
+  dplyr::rename('age_group' = 'group') %>% 
+  mutate(TC = TC/100,
+         TC_bin = case_when(
+           TC >= 0 & TC < 0.1 ~ '.0-.1',
+           TC >= 0.1 & TC < 0.2 ~ '.1-.2',
+           TC >= 0.2 & TC < 0.3 ~ '.2-.3',
+           TC >= 0.3 & TC < 0.4 ~ '.3-.4',
+           TC >= 0.4 & TC < 0.5 ~ '.4-.5',
+           TC >= 0.5 & TC < 0.6 ~ '.5-.6',
+           TC >= 0.6 & TC < 0.7 ~ '.6-.7',
+           TC >= 0.7 & TC < 0.8 ~ '.7-.8',
+           TC >= 0.8 & TC < 0.9 ~ '.8-.9',
+           TC >= 0.9 & TC <= 1.0 ~ '.9-1'),
+         TC_bin_num = as.numeric(substr(TC_bin, 2, 2))+1, #binning TC for plotting purposes
+         logRT = log(tempRT),
+         logConf = case_when(
+           vasRating == 100 ~ 99.999,
+           vasRating == 0 ~ 0.001,
+           vasRating < 100 & vasRating > 0 ~ vasRating),
+         logConf = logitF(logConf/100)) #logit-transform 
+  
+
+# summaries
+tc_mean <- aggregate(TC ~ subject*age*temp_cond, mean, data = ageDat2)
+rt_mean <- aggregate(logRT ~ subject*age*temp_cond, median, data = ageDat2)
+conf_mean <- aggregate(vasRating ~ subject*age*temp_cond, median, data = ageDat2)
+phs_count <- aggregate(PHS ~ subject*age*temp_cond, sum, data = ageDat2)
+phs_count <- phs_count %>% 
+  mutate(phs_bin = ifelse(PHS > 0, 1, 0))
+
+all_sums <- tc_mean %>% 
+  left_join(rt_mean, by = c('subject', 'temp_cond', 'age')) 
+all_sums <- all_sums %>% 
+  left_join(phs_count, by = c('subject', 'temp_cond', 'age'))
+all_sums <- all_sums %>% 
+  left_join(conf_mean, by = c('subject', 'temp_cond', 'age'))
+
+# stratify by age
+all_sums <- all_sums %>% 
+  mutate(age_group = substr(subject, 5, 5))
+
+# summarising across thermal contrast bins for visualisation
+ageDat2$count = 1 #adding counter to identify n trials per bin
+binned_rt <- aggregate(logRT ~ subject*age*age_group*TC_bin*TC_bin_num, median, data = ageDat2)
+binned_phs <- aggregate(PHS ~ subject*age*age_group*TC_bin*TC_bin_num, sum, data = ageDat2)
+binned_conf <- aggregate(vasRating ~ subject*age*age_group*TC_bin*TC_bin_num, median, data = ageDat2)
+binned_trials <- aggregate(count ~ subject*age*age_group*TC_bin*TC_bin_num, sum, data = ageDat2)
+
+all_binned <- binned_phs %>% 
+  left_join(binned_rt, by = c('subject','age_group','age','TC_bin', 'TC_bin_num'))
+all_binned <- all_binned %>% 
+  left_join(binned_conf, by = c('subject','age_group','age','TC_bin','TC_bin_num'))
+all_binned <- all_binned %>% 
+  left_join(binned_trials, by = c('subject','age_group','age','TC_bin','TC_bin_num')) %>% 
+  mutate(PHS_bi = ifelse(PHS > 0, 1, 0),
+         PHS_per = (PHS/count)*100) # finally, create PHS binary and PHS percentage
+
+ageDat2$PHS <- as.factor(ageDat2$PHS)
+
+# bin phs_count
+phs_count <- phs_count %>% 
+  mutate(PHS_grouped = case_when(
+    PHS == 0 ~ '0',
+    PHS > 0 & PHS < 4 ~ '1-3',
+    PHS > 3 & PHS < 7 ~ '4-6',
+    PHS > 6 & PHS < 10 ~ '7-9',
+    PHS > 9 ~ '10+',
+  )) %>% 
+  mutate(PHS_grouped = factor(PHS_grouped, levels = c('0','1-3','4-6','7-9','10+')))
+```
+#figure s1
+```{r}
+ggplot(data = phs_count %>% filter(PHS != 0),
+       aes(x = temp_cond,
+           fill = forcats::fct_rev(PHS_grouped))) +
+  geom_histogram(width = 0.6, stat = "count", position = 'stack', 
+                 colour = 'grey10', linewidth = 0.6) +
+  scale_color_manual(values = unname(stepped())) +
+  scale_y_continuous(name =  'N participants', limits = c(0,75), breaks = c(0,25,50,75)) +
+  scale_x_continuous(name = 'Peak temperature condition', breaks = c(1,2,3,4), labels = c('I-1','I-2','N-1','N-2')) +
+  scale_fill_manual(name = 'N PHS', values = c(pal_or[7],pal_or[5],pal_or[3],pal_or[1])) +
+  labs(title = 'PHS prevalence') +
+  theme_classic() +
+  theme(legend.position = 'bottom',
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 12),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size = 8),
+        legend.direction = 'horizontal',
+        panel.border = element_rect(fill = NA, size = 1.2)) -> phs_count_fig
+
+phs_count_fig
+
+ggsave(file.path(here::here("manuscript","figures","figureS1.png")), phs_count_fig, device = NULL,
+       width = 5, height = 5, dpi = 600)
+```
+
+## catch trials (misstakes) vs Number of PHS responses
+```{r}
+all_combinations <- expand_grid(
+  subject = unique(ageDat$subject),
+  catch = unique(ageDat$catch),
+  PHS = unique(ageDat$PHS)
+)
+
+# Count actual occurrences
+n_wrong_catch <- ageDat %>%
+  group_by(subject, catch, PHS) %>%
+  dplyr::summarize(n = n(), .groups = "drop") %>%
+  right_join(all_combinations, by = c("subject", "catch", "PHS")) %>%
+  dplyr::mutate(n = replace_na(n, 0)) %>%
+  filter(catch == 1 & PHS == 0)
+
+
+n_phs <- ageDat %>%
+  group_by(subject, catch, PHS) %>%
+  dplyr::summarize(n = n(), .groups = "drop") %>%
+  right_join(all_combinations, by = c("subject", "catch", "PHS")) %>%
+  dplyr::mutate(n = replace_na(n, 0)) %>%
+  filter(catch == 0 & PHS == 1)
+
+data.frame(x = n_wrong_catch$n, y = n_phs$n) %>% ggplot(aes(x = x, y = y))+geom_point()+theme_classic()+geom_smooth(method = "lm")
+
+correlation = cor.test(n_wrong_catch$n,n_phs$n)
+correlation
+
+## bayesian correlation
+
+mod = cmdstanr::cmdstan_model(here::here("analysis","stanmodels","bayesian_correlation.stan"))
+
+datastan = list(x = n_wrong_catch$n,
+                y = n_phs$n, 
+                N = nrow(n_phs))
+
+cor = mod$sample(data = datastan,
+                        refresh = 100,
+                        iter_warmup = 1000,
+                        iter_sampling = 1000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.90,
+                        max_treedepth = 12)
+
+
+correlation = as_draws_df(cor$draws("rho")) %>% 
+  dplyr::summarize(mean=mean(rho),
+            q5 = HDInterval::hdi(rho)[1],
+            q95 = HDInterval::hdi(rho)[2],
+            prop_above_0 = sum(rho >0) / n())
+
+```
+
+## durations
+
+## What about the guess rate (no TC and the probability of being wrong in a catch trial)
+
+```{r}
+
+library(lmerTest)
+m1 = (glmer(tempResp ~ catch + (catch | subject),data = ageDat, family = binomial(link = "logit")))
+summary(m1)
+library(marginaleffects)
+
+pred = predictions(m1, by = "catch")
+pred
+
+# The bayesian equivalent:
+mod = cmdstanr::cmdstan_model(here::here("analysis","stanmodels","Mixed_effects_logistic.stan"))
+
+datastan = list(catch = ageDat$catch,
+                y = ageDat$tempResp, 
+                S_id = as.numeric(as.factor(ageDat$subject)),
+                S = length(unique(ageDat$subject)),
+                N = nrow(ageDat))
+
+mixed_log = mod$sample(data = datastan,
+                        refresh = 100,
+                        iter_warmup = 1000,
+                        iter_sampling = 1000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.90,
+                        max_treedepth = 12)
+
+
+pred = as_draws_df(mixed_log$draws("gm")) %>% 
+  select(-contains(".")) %>% 
+  rename_with(~c("catch_0","catch_1")) %>% 
+  mutate(catch_1 = catch_0 + catch_1) %>% 
+  pivot_longer(everything()) %>% 
+  group_by(name) %>% 
+  mutate(value = brms::inv_logit_scaled(value)) %>% 
+  dplyr::summarize(mean=mean(value),
+            q5 = HDInterval::hdi(value)[1],
+            q95 = HDInterval::hdi(value)[2])
+
+
+as_draws_df(model$draws("mus_phs[3]")) %>% 
+  select(-contains(".")) %>% 
+  dplyr::mutate(draw = 1:n()) %>% 
+  pivot_longer(-draw) %>% 
+  mutate(value = brms::inv_logit_scaled(value)) %>% 
+  ggplot(aes(x = value))+geom_histogram(col = "black")+
+  geom_vline(data = data.frame(pred) %>% 
+               filter(name == "catch_1"), aes(xintercept = mean), linetype = 2, col = "red")+
+  geom_vline(data = data.frame(pred) %>% 
+               filter(name == "catch_1"), aes(xintercept = q5), linetype = 2, col = "red")+
+  geom_vline(data = data.frame(pred) %>% 
+               filter(name == "catch_1"), aes(xintercept = q95), linetype = 2, col = "red")+
+  theme_classic()
+
+
+
+lower_asym = as_draws_df(model$draws("mus_phs[3]")) %>% 
+  select(-contains(".")) %>% 
+  dplyr::mutate(draw = 1:n()) %>% 
+  pivot_longer(-draw) %>% 
+  mutate(value = brms::inv_logit_scaled(value)) %>% 
+  summarize(mean = mean(value)*100,
+            q5 = hdi(value,0.95)[1]*100,
+            q95 = hdi(value,0.95)[2]*100)
+
+
+saveRDS(lower_asym,here::here("manuscript","objects","lower_asym.rds"))
+saveRDS(correlation,here::here("manuscript","objects","method_correlation.rds"))
+saveRDS(pred,here::here("manuscript","objects","method_prediction.rds"))
+
+```
+
+# Supplmentary analysis
+
+# did peak temp increase with age?
+
+```{r}
+mod = cmdstanr::cmdstan_model(here::here("analysis","stanmodels","linear_regression_age_temp.stan"))
+
+dd = ageDat %>% select(subject,age,tmax_temp) %>% distinct()
+
+datastan = list(age = dd$age,
+                y = dd$tmax_temp, 
+                N = nrow(dd))
+
+lr_age_temp = mod$sample(data = datastan,
+                        refresh = 100,
+                        iter_warmup = 1000,
+                        iter_sampling = 1000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.90,
+                        max_treedepth = 12)
+
+lr_age_temp = as_draws_df(lr_age_temp$draws("beta[2]")) %>% 
+  select(-contains(".")) %>% rename_with(~c("h")) %>% 
+  dplyr::summarize(mean = mean(h),
+                   q5 = hdi(h)[1],
+                   q95 = hdi(h)[2],
+                   prop_above_0 = sum(h>0)/n())
+
+saveRDS(lr_age_temp,here::here("manuscript","objects","lr_age_temp.rds"))
+
+# the same frequenctist model
+
+summary(lm(tmax_temp ~ age, data = dd))
+```
+
+# check task performance - three questions at the end of the experiment
+# forced choice: 1 - waited until sure to respond, 0 - responded even if unsure
+# two vas: 
+# (1) how often did you press button even when unsure of temperature change?
+# (2) how often did you wait to be sure to press the button?
+
+
+```{r}
+# first remove patients and fix 1009
+perfDat <- perfDat %>% 
+  mutate(subject = replace_na(subject, 1009)) %>% 
+  filter(subject < 5000 & subject > 0) 
+
+# combine with demographics to get final subjects used in analysis
+allDat <- demo %>% 
+  dplyr::rename('subject' = 'ID') %>% 
+  filter(subject < 5000) %>%
+  left_join(perfDat, by = 'subject') %>% 
+  filter(include_phs > 0) %>% 
+  mutate(age_group = substr(subject, 1, 1)) %>% 
+  mutate(
+    unsure_VAS = unsure_VAS / 100,
+    sure_VAS = sure_VAS / 100
+  )
+
+responses <- allDat %>% 
+  group_by(response) %>% 
+  dplyr::summarise(count = n(),
+            percent = (n()/75)*100,
+            uVAS = median(unsure_VAS),
+            sVAS = median(sure_VAS),
+            sdUVAS = sd(unsure_VAS),
+            sdSVAS = sd(sure_VAS))
+
+print(paste0('Responded when unsure: ', responses$count[1]/75))
+print(paste0('Responded when sure: ', responses$count[2]/75))
+
+
+
+saveRDS(responses,here::here("manuscript","objects","supplementary_responses.rds"))
+
+# forced choice responses
+m_resp = glm(response ~ age,data = allDat)
+summary(m_resp)
+
+
+# bayesian model:
+
+mod = cmdstanr::cmdstan_model(here::here("analysis","stanmodels","logsitic_age_forced_choice.stan"))
+
+datastan = list(age = allDat$age,
+                y = allDat$response, 
+                N = nrow(allDat))
+
+logs_reg_age_resp = mod$sample(data = datastan,
+                        refresh = 100,
+                        iter_warmup = 1000,
+                        iter_sampling = 1000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.90,
+                        max_treedepth = 12)
+
+logs_reg_age_resp = as_draws_df(logs_reg_age_resp$draws("beta[2]")) %>% 
+  select(-contains(".")) %>% rename_with(~c("h")) %>% 
+  dplyr::summarize(mean = mean(h),
+                   q5 = hdi(h)[1],
+                   q95 = hdi(h)[2],
+                   prop_above_0 = sum(h>0)/n())
+
+saveRDS(logs_reg_age_resp,here::here("manuscript","objects","logs_reg_age_resp.rds"))
+
+
+
+# now check association with age and the continous responses
+
+
+mod = cmdstanr::cmdstan_model(here::here("analysis","stanmodels","ordered_beta_VAS_strategy.stan"))
+
+dd2 = allDat %>% select(age,subject,unsure_VAS,sure_VAS) %>% distinct()
+
+datastan = list(age = allDat$age,
+                VAS = allDat$unsure_VAS, 
+                N = nrow(allDat))
+
+ord_beta_unsure = mod$sample(data = datastan,
+                        refresh = 100,
+                        iter_warmup = 1000,
+                        iter_sampling = 1000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.90,
+                        max_treedepth = 12)
+
+ord_beta_unsure = as_draws_df(ord_beta_unsure$draws("beta[2]")) %>% 
+  select(-contains(".")) %>% rename_with(~c("h")) %>% 
+  dplyr::summarize(mean = mean(h),
+                   q5 = hdi(h)[1],
+                   q95 = hdi(h)[2],
+                   prop_above_0 = sum(h>0)/n())
+
+# same as frequentist
+
+m_age1 = glmmTMB::glmmTMB(unsure_VAS ~ age, data = allDat, family = ordbeta())
+summary(m_age1)
+
+
+
+mod = cmdstanr::cmdstan_model(here::here("analysis","stanmodels","ordered_beta_VAS_strategy.stan"))
+
+dd2 = allDat %>% select(age,subject,unsure_VAS,sure_VAS) %>% distinct()
+
+datastan = list(age = allDat$age,
+                VAS = allDat$sure_VAS, 
+                N = nrow(allDat))
+
+ord_beta_sure = mod$sample(data = datastan,
+                        refresh = 100,
+                        iter_warmup = 1000,
+                        iter_sampling = 1000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.90,
+                        max_treedepth = 12)
+
+ord_beta_sure = as_draws_df(ord_beta_sure$draws("beta[2]")) %>% 
+  select(-contains(".")) %>% rename_with(~c("h")) %>% 
+  dplyr::summarize(mean = mean(h),
+                   q5 = hdi(h)[1],
+                   q95 = hdi(h)[2],
+                   prop_above_0 = sum(h>0)/n())
+
+# same freq
+
+m_age2 = glmmTMB::glmmTMB(sure_VAS ~ age, data = allDat, family = ordbeta())
+summary(m_age2)
+
+
+saveRDS(list(ord_beta_sure,ord_beta_unsure),here::here("manuscript","objects","ordered_beta_VAS_wait.rds"))
+```
+
+# a quick figure
+```{r}
+allDat %>% 
+  group_by(age_group, response) %>% 
+  summarise(mUVAS = median(unsure_VAS),
+            mSVAS = median(sure_VAS)) 
+ 
+  allDat %>% 
+    mutate(age_group = as.numeric(as.character(age_group))) %>% 
+    ggplot() +
+    geom_boxplot(aes(age_group-0.15, unsure_VAS, group = as.factor(age_group)), 
+                 width = .25, fill = 'skyblue3', alpha = .5) +
+    geom_boxplot(aes(age_group+0.15, sure_VAS, group = as.factor(age_group)), 
+                 width = .25, fill = 'orange', alpha = .5) +
+    scale_x_continuous(name = 'Age group', breaks = c(1,2,3,4), labels = c('1','2','3','4')) +
+    scale_y_continuous(name = 'VAS rating') +
+    scale_colour_manual(labels = c('Unsure', 'Sure')) +
+    theme_classic() +
+    theme(panel.border = element_rect(fill = NA, linewidth = 1),
+          legend.position = 'bottom')
+
+```
+
+

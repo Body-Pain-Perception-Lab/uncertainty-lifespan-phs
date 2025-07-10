@@ -1,0 +1,312 @@
+---
+title: "Visualizations"
+author: "Jesper Fischer Ehmsen"
+date: "2024-10-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(bayesplot, brms, cmdstanr, extraDistr, furrr, ggplot2, ggpubr, pracma, 
+               RColorBrewer, tidyverse)
+
+# adding functions to path
+sapply(list.files(here::here("analysis","functions"), full.names = T), source)
+source(here::here("preregistration","Recovery_Power", 'power_parameter_scripts.R'))
+
+# palettes
+pair_pal <- brewer.pal(11,'PRGn')
+```
+
+# load simulated results:
+```{r}
+results_cyper = readRDS(here::here("preregistration","Recovery_Power","results","results_cypertron.rds"))
+results_citron = readRDS(here::here("preregistration","Recovery_Power","results","results_citron.rds"))
+
+# Here we remove all simulations that returned an error, I.e. over 2% of response times being above 10 s.
+error_ids = which(results_cyper == "Error")
+error_ids = as.numeric(error_ids)
+results_cyper = results_cyper[-error_ids]
+
+
+error_ids = which(results_citron == "Error")
+error_ids = as.numeric(error_ids)
+results_citron = results_citron[-error_ids]
+
+
+results = c(results_cyper,results_citron)
+```
+
+
+The results are ordered in the following nested list. Each of the first indices is a simulations (one simulated data set that was fit by all 3 models (m1, m2 and m0)). Each of these lists (simulations) consists of another list with 7 indicies. These are explained in order below:
+
+## CHANGE THIS WHEN YOU ARE DONE WITH FIGS
+
+1: model comparison between m1 and m2 on the full log-likelihood, that is the full dataset (binary & RT & Confidence)..
+2: model comparison between m1 and m2 on the the binary log-likelihood, that is only the binary responses.
+5: Nested list of the results from fitting m1
+6: Nested list of the results from fitting m2
+7: dataset used for the simulation (trial level together with the subject level parameters)
+
+The nested lists for the results of fitting the respective models follow the following ordering:
+
+1: group mean parameters (estimated and simulated)
+2: group between subject variance parameters (estimated and simulated)
+3: group parameters of age (estimated and simulated)
+4: subject level parameters (estimated and simulated)
+
+
+### Defining citeria for successful fit:
+```{r}
+#minimum effective sample size:
+eff = 200
+#max rhat
+rhatq = 1.05
+#divergent
+div = 0
+#treedepth
+tree = 1000
+#pareto_k
+pk = 30
+```
+
+# parameter recovery
+## group means
+```{r,fig.width=12,fig.height=8}
+# Combine the results into a single list or vector if needed
+# model 1
+n <- length(results) # Total number of main lists
+result1 <- lapply(seq_len(n), function(x) results[[x]][[5]][[1]])
+mus1 <- bind_rows(result1) %>% 
+  filter(mean_div <= div, mean_tree <= tree, 
+         rhat <= rhatq, ess_bulk >= eff, ess_tail >= eff) %>% 
+  filter(fitted_model == simulated_model)
+
+# model 2
+result2 <- lapply(seq_len(n), function(x) results[[x]][[6]][[1]])
+mus2 <- bind_rows(result2) %>% 
+  filter(mean_div <= div, mean_tree <= tree, 
+         rhat <= rhatq, ess_bulk >= eff, ess_tail >= eff) %>% 
+  filter(fitted_model == simulated_model)
+
+mus_all <- rbind(mus1, mus2)
+mus_all <- mus_all %>% 
+  mutate(parameters = fct_recode(parameters, "a_phs" = "mu_int_phs",
+                                 "b1_phs" = "mu_slope_phs",
+                                 "mu_rt" = "mu_int_rt",
+                                 "mu_conf" = "mu_int_conf",
+                                 "b1_rt" = "mu_slopes_rt",
+                                 "b1_conf" = "mu_slopes_conf",
+                                 "sigma_rt" = "mu_sigma_rt",
+                                 "phi_conf" = "mu_prec_conf",
+                                 "c1" = "mu_cut0",
+                                 "c2" = "mu_cut1",
+                                 "guess" = "mu_int_g",
+                                 "lapse" = "mu_int_l",
+                                 "ndt" = "mu_ndt_rt",
+                                 "b2_rt" = "mu_slopes1_rt",
+                                 "b2_conf" = "mu_slopes1_conf"),
+         parameters = factor(parameters, levels = c("a_phs","b1_phs","guess","lapse",
+                             "mu_rt","b1_rt","b2_rt","sigma_rt","ndt",
+                             "mu_conf","b1_conf","b2_conf","phi_conf","c1","c2")
+                             ))
+
+# make plot
+gm_plot <- ggplot(data = mus_all, aes(x = simulated_parameters, 
+           y = mean, 
+           ymin = q5, 
+           ymax = q95,
+           group = simulated_model,
+           colour = simulated_model))+
+  geom_pointrange(alpha=.60)+
+  geom_abline(linewidth=1.5, color='grey15', alpha=.90)+
+  scale_color_manual(values=c(pair_pal[10],pair_pal[2]))+
+  facet_wrap(~parameters, scales = "free")+
+  labs(x = 'Simulated parameters', y = 'Fitted parameters',
+       title = 'Parameter recovery: group means')+
+  theme_classic()+
+  theme(axis.title = element_text(size = 12),
+        legend.title = element_blank(),
+        panel.border = element_rect(colour = 'grey10', fill=NA, linewidth = 1),
+        plot.title = element_text(hjust = 0.5, vjust = 2, size = 14))
+gm_plot
+```
+
+## age effects (power analysis check)
+```{r,fig.width=12,fig.height=8}
+n <- length(results) # Total number of main lists
+result1 <- lapply(seq_len(n), function(x) results[[x]][[5]][[3]])
+result2 <- lapply(seq_len(n), function(x) results[[x]][[6]][[3]])
+
+# Combine the results into a single list or vector if needed
+ages <- bind_rows(result1,result2) %>% 
+  filter(mean_div <= div, mean_tree <= tree, 
+         rhat <= rhatq, ess_bulk >= eff, ess_tail >= eff) %>% 
+  filter(fitted_model == simulated_model)
+
+ages <- ages %>% 
+  mutate(parameters = fct_recode(parameters,
+                                 "age_a_phs" = "age_int_coeff",
+                                 "age_b_phs" = "age_slopes_coeff",
+                                 "age_rt" = "age_rt_coeff",
+                                 "age_conf" = "age_conf_coeff"),
+         parameters = factor(parameters, levels = c("age_a_phs","age_b_phs",
+                                                    "age_rt","age_conf"))
+  )
+
+
+ae_plot <- ages %>% 
+  ggplot(aes(x = simulated_parameters, 
+             y = mean, 
+             ymin = q5, 
+             ymax = q95,
+             colour = fitted_model))+
+  geom_pointrange(alpha = .60)+
+  geom_abline(linewidth=1.5, color='grey15', alpha=.90)+
+  facet_wrap(~parameters,scales = "free")+
+  scale_color_manual(values=c(pair_pal[10],pair_pal[2]))+
+  labs(x = 'Simulated parameters', y = 'Fitted parameters',
+       title = 'Parameter recovery: effect of age')+
+  theme_classic() +
+  theme(axis.title = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.position = 'none',
+        panel.border = element_rect(colour = 'grey10', fill=NA, linewidth = 1),
+        plot.title = element_text(hjust = 0.5, vjust = 2, size = 14))
+ae_plot
+  
+```
+
+# Model comparison
+## full log likelihood (m1 & m2)
+```{r}
+mr_results <- map_dfr(results,1) %>% 
+      filter(elpd_diff != 0)  %>% 
+      rename(fitted_model = model) %>% 
+      filter(mean_div <= div, mean_tree <= tree, pareto_k_over07 <= pk) %>% 
+  mutate(sim_val = idx/max(idx))
+
+mr_plot <- mr_results %>% 
+  ggplot(aes(x = sim_val, 
+             y = elpd_diff,
+             ymin = elpd_diff-2*se_diff, 
+             ymax = elpd_diff+2*se_diff, 
+             col = fitted_model))+
+  geom_pointrange(alpha = .60)+
+  geom_hline(yintercept = 0)+
+  geom_hline(yintercept = -4,, linetype = 2)+
+  scale_color_manual(values=c(pair_pal[10],pair_pal[2]))+
+  facet_wrap(~simulated_model)+
+  labs(x = 'Simulation  index', y = 'ELPD difference',
+       title = 'Model recovery')+
+  theme_classic() +
+  theme(axis.title = element_text(size = 12),
+        legend.title = element_blank(),
+        legend.position = 'none',
+        panel.border = element_rect(colour = 'grey10', fill=NA, linewidth = 1),
+        plot.title = element_text(hjust = 0.5, vjust = 2, size = 14),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank())
+
+mr_plot
+```
+
+# Combine plots
+```{r}
+merge_plot <- ggarrange(ae_plot, NA, mr_plot,
+                        widths = c(1, .02, .95),
+                        nrow = 1, ncol = 3,
+                        common.legend = FALSE,
+                        labels = c('B.','','C.'))
+merge_plot
+
+pr_plot <- ggarrange(gm_plot, NA, merge_plot,
+                     nrow = 3, ncol = 1,
+                     heights = c(1.4, .05, .8),
+                     common.legend = TRUE, legend = 'bottom',
+                     labels = c('A.'))
+pr_plot
+
+ggsave(here::here("preregistration","Recovery_Power","plots",'param_recovery_plot.png'), pr_plot, device = NULL, width = 8, height = 10, dpi = 600)
+```
+
+STUFF NOT CURRENTLY USING
+## binary log likelihood (m1 & m2)
+
+```{r}
+map_dfr(results,3)%>% filter(elpd_diff != 0)  %>%
+  filter(mean_div <= div, mean_tree <= tree, pareto_k_over07 <= pk) %>% 
+  ggplot(aes(x = idx, 
+             y = elpd_diff,
+             ymin = elpd_diff-se_diff, 
+             ymax = elpd_diff+se_diff, 
+             col = model))+
+  geom_pointrange()+
+  geom_hline(yintercept = 0, linetype = 2)+
+  facet_wrap(~simulated_model)+
+  theme_classic()
+
+```
+
+## Between subject variances
+
+```{r,fig.width=12,fig.height=8}
+n <- length(results) # Total number of main lists
+# model 1
+result1 <- lapply(seq_len(n), function(x) results[[x]][[5]][[2]])
+taus1 <- bind_rows(result1) %>% 
+  filter(mean_div <= div, mean_tree <= tree, rhat <= rhatq, ess_bulk >= eff, ess_tail >= eff) %>% 
+  filter(fitted_model == simulated_model)
+# model 2
+result2 <- lapply(seq_len(n), function(x) results[[x]][[6]][[2]])
+taus2 <- bind_rows(result2) %>% 
+  filter(mean_div <= div, mean_tree <= tree, rhat <= rhatq, ess_bulk >= eff, ess_tail >= eff) %>% 
+  filter(fitted_model == simulated_model)
+
+taus %>% 
+  ggplot(aes(x = simulated_parameters, 
+             y = mean, 
+             ymin = q5, 
+             ymax = q95,
+             colour = fitted_model))+
+  geom_pointrange(alpha=.70)+
+  geom_abline(linewidth=1, color='grey10', alpha=.80)+
+  scale_color_manual(values=c(pair_pal[10],pair_pal[2]))+
+  facet_wrap(~parameters,scales = "free")+
+  theme_bw()
+```
+
+## subject level parameters
+# model 1
+```{r,fig.width=12,fig.height=8}
+# subject level
+n <- length(results) # Total number of main lists
+result <- lapply(seq_len(n), function(x) results[[x]][[5]][[4]])
+
+# Combine the results into a single list or vector if needed
+subject <- bind_rows(result)
+
+subject %>% 
+  filter(mean_div <= div, mean_tree <= tree, rhat <= rhatq, ess_bulk >= eff, ess_tail >= eff) %>% 
+  filter(fitted_model == simulated_model) %>% 
+  ggplot(aes(x = simulated_parameters, y = mean, ymin = q5, ymax = q95))+
+  geom_pointrange(alpha = 0.1)+facet_wrap(~parameters,scales = "free")+theme_minimal()+geom_abline()
+```
+
+#subject level:
+# model 2
+```{r,fig.width=12,fig.height=8}
+# subject level
+n <- length(results) # Total number of main lists
+result <- lapply(seq_len(n), function(x) results[[x]][[6]][[4]])
+
+# Combine the results into a single list or vector if needed
+subject <- bind_rows(result)
+
+subject %>% 
+  filter(mean_div <= div, mean_tree <= tree, rhat <= rhatq, ess_bulk >= eff, ess_tail >= eff) %>% 
+  filter(fitted_model == simulated_model) %>% 
+  ggplot(aes(x = simulated_parameters, y = mean, ymin = q5, ymax = q95))+
+  geom_pointrange()+facet_wrap(~parameters,scales = "free")+theme_minimal()+geom_abline()
+
+```

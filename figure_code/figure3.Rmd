@@ -1,0 +1,198 @@
+---
+title: "Figure 3"
+author: "A.G. Mitchell"
+date: "2025-05-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Load functions and packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(bayesplot, brms, cmdstanr, gghalves, ggpol, ggpubr, tidyverse,
+                 gridExtra, wesanderson, RColorBrewer, Rmisc, cowplot,magick,tinytex)
+  
+# functions
+functions = list.files(file.path(here::here("analysis","functions")), full.names = TRUE)
+sapply(functions, source)
+```
+
+# generating simulated curves to plot
+
+```{r}
+# Thermal contrast
+
+TC = seq(0.01, 100, length = 100)
+# phs parameters
+# Threshold
+a1 = 4
+# slope
+b1 = -2
+# Guess rate
+g = -4
+# Lapse rate
+l = -2
+#Generate probabilities of PHS
+p = prob_func(TC,exp(a1),exp(b1),
+              inv_logit_scaled(g)/2,inv_logit_scaled(l)/2)
+# rt parameters
+# Mean RT at p = 0
+a2 = 0.4 
+# how much does the probability of PHS influence Response times
+b2 = 1.5
+# Two response time models (entropy & pure probability)
+rt1 = a2+b2*entropy(p)
+rt2 = a2+b2*(p)
+
+# confidence parameters
+# Mean confidence at p = 0
+a3 = 80
+# How much does confidence change based on probability of PHS
+b3 = -45
+
+# Two Confidence models (entropy & pure probability)
+conf1 = a3+b3*entropy(p)
+conf2 = a3+b3*(p)
+
+# Generate the simulated data for confidence and response time
+
+df1 <- data.frame(TC,p,rt1,conf1) %>% 
+  mutate(model = 'true perceiver') %>% 
+  dplyr::rename('rt' = 'rt1',
+         'conf' = 'conf1')
+df2 <- data.frame(TC,p,rt2,conf2) %>% 
+  mutate(model = 'unsure perceiver') %>% 
+  dplyr::rename('rt' = 'rt2',
+         'conf' = 'conf2')
+
+# Combine it all
+df <- rbind(df1, df2) %>%
+  mutate(TC_scaled = (TC - min(TC)) / (max(TC) - min(TC)))
+```
+
+# Generate model plots
+```{r}
+geomline_widths = 0.7
+
+# PHS plot
+phs_fig <- df %>% 
+  ggplot() +
+  geom_line(aes(TC, p, colour = model),show.legend = F, 
+            linewidth = geomline_widths) +
+  scale_colour_manual(values = c('darkgreen','purple4')) +
+  scale_y_continuous(limits = c(0,1), breaks = c(seq(0, 1, length = 3)), labels = c('0','0.5','1.0')) +
+  scale_x_continuous(breaks = c(seq(0, 1, length = 3)), labels = c('0','0.5','1')) +
+  labs(y = 'P(PHS)') +
+  theme_classic() +
+  geom_line(data = df, aes(TC, p),col = "black", 
+            linewidth = geomline_widths) +
+  theme(axis.title = element_text(size = 11),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        axis.title.x = element_blank(),
+        legend.position = "none",
+        panel.border = element_rect(linewidth = geomline_widths, fill = NA),
+        legend.title = element_blank())+
+    geom_vline(xintercept = exp(a1), 
+             linetype = 'dashed', linewidth = geomline_widths-0.1, colour = 'grey30')
+
+# response time plot
+
+rt_fig <- df %>% 
+  ggplot() +
+  geom_line(aes(TC, rt, group = model, colour = model), 
+            linewidth = geomline_widths) +
+  geom_vline(xintercept = exp(a1), 
+             linetype = 'dashed', linewidth = 0.6, colour = 'grey30') +
+  scale_colour_manual(values = c('darkgreen','purple4')) +
+  scale_y_continuous(limits = c(0,2), breaks = c(seq(0, 2, length = 3)), labels = c('0','1.0','2.0')) +
+  scale_x_continuous(breaks = c(seq(0, 100, length = 3)), labels = c('0','0.5','1')) +
+  labs(y = 'Response time') +
+  theme_classic() +
+  theme(axis.title = element_text(size = 11),
+        axis.text = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks = element_blank(),
+        panel.border = element_rect(linewidth = geomline_widths, fill = NA),
+        legend.position = "none",
+        legend.title = element_blank())
+
+# confidence plot
+
+conf_fig <- df %>% 
+  ggplot() +
+  geom_line(aes(TC, conf, group = model, colour = model),
+            linewidth = geomline_widths) +
+  geom_vline(xintercept = exp(a1), 
+             linetype = 'dashed', linewidth = 0.6, colour = 'grey30') +
+  scale_colour_manual(values = c('darkgreen','purple4')) +
+  scale_y_continuous(limits = c(0,100), breaks = c(seq(0, 100, length = 3)), labels = c('0','50','100')) +
+  scale_x_continuous(breaks = c(seq(0, 100, length = 3)), labels = c('0','0.5','1')) +
+  labs(y = 'Confidence', x = 'Thermal contrast') +
+  theme_classic() +
+  theme(axis.title = element_text(size = 11),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.border = element_rect(linewidth = geomline_widths, fill = NA),
+        legend.position = c(0.271,0.12),
+        legend.direction = "vertical",
+        legend.text = element_text(size = 8),
+        legend.key.size = unit(0.18, "cm"),
+        legend.title = element_blank())
+
+# combine figures
+m_fig <- ggarrange(phs_fig,NA,rt_fig,NA,conf_fig,
+                   ncol = 1, nrow = 5,
+                   heights=c(1,0.01,1,0.01,1.1)
+                   )
+m_fig
+
+# Save plot as PDF to load in with plate notation to keep quality
+
+ggsave(here::here("figure_code", "models_example.pdf"), m_fig, device = NULL, width = 2.5, height = 6.2, dpi = 600)
+```
+
+## compile plate-notation "latex-code"
+
+```{r}
+tinytex::latexmk(here::here("figure_code","Platenotation", "plate_v1.tex"))
+```
+
+
+# Load platenotation and combine 
+```{r}
+# Load the platenotation
+img1 <- image_read_pdf(here::here("figure_code", "Platenotation", "plate_v1.pdf"), density = 600)
+# Load the curves:
+img2 <- image_read_pdf(here::here("figure_code", "models_example.pdf"), density = 600)
+
+# Combine the two
+combined <- image_append(c(img1, img2))
+
+
+# Write the combined images (here)
+
+# image_write(combined, here::here("figure_code", "Figure3.tiff"), format = "tiff")
+# image_write(combined, here::here("figure_code", "Figure3.png"), format = "png")
+
+
+# Write the combined images in the manuscript folder (for now just png not tiff)
+
+# image_write(combined, here::here("manuscript","figures", "Figure3.tiff"), format = "tiff")
+image_write(combined, here::here("manuscript","figures", "Figure3.png"), format = "png")
+
+
+```
+
+
+```{r}
+# Remove the pdfs here for order!
+
+file.remove(here::here("figure_code", "Platenotation", "plate_v1.pdf"))
+file.remove(here::here("figure_code", "models_example.pdf"))
+```
+

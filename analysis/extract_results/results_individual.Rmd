@@ -1,0 +1,61 @@
+---
+title: "short_individual_dif report"
+author: "Jesper F. E."
+date: "2024-10-24"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Load data, packages and the model preference and ages to do the correlation analysis for the manuscript
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(bayesplot, brms, cmdstanr, extraDistr, furrr, ggpubr, ggplot2, pracma, 
+               RColorBrewer, tidyverse)
+
+
+loos = readRDS(here::here("analysis","objects","individual_loos.rds"))
+```
+
+# do the correlation and save the results
+```{r, include=FALSE,echo=FALSE, warning=F}
+ll1 = loos %>% 
+  mutate(elpd_diff = ifelse(model == "m1", -elpd_diff,elpd_diff)) %>% 
+  filter(elpd_diff != 0)
+
+id_arrange = ll1 %>% arrange(elpd_diff) %>% .$id
+ll1$id <- factor(ll1$id, levels = id_arrange)
+
+correlation_indi = cor.test(ll1 %>% filter(mean_div == 0) %>% .$age,
+         ll1 %>% filter(mean_div == 0) %>% .$elpd_diff)
+
+
+## bayesian correlation
+
+mod = cmdstanr::cmdstan_model(here::here("analysis","stanmodels","bayesian_correlation_elpd_age.stan"))
+
+datastan = list(x = ll1 %>% filter(mean_div == 0) %>% .$age,
+                y = ll1 %>% filter(mean_div == 0) %>% .$elpd_diff,
+                # y_error = ll1 %>% filter(mean_div == 0) %>% .$se_diff,
+                N = nrow(ll1 %>% filter(mean_div == 0)))
+
+cor = mod$sample(data = datastan,
+                        refresh = 1000,
+                        iter_warmup = 1000,
+                        iter_sampling = 1000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.99,
+                        max_treedepth = 12)
+
+
+correlation = as_draws_df(cor$draws("rho")) %>% 
+  dplyr::summarize(mean=mean(rho),
+            q5 = HDInterval::hdi(rho)[1],
+            q95 = HDInterval::hdi(rho)[2],
+            prop_above_0 = sum(rho >0) / n())
+
+
+
+saveRDS(correlation,here::here("manuscript","objects","correlation_indi.rds"))
+```

@@ -1,0 +1,330 @@
+---
+title: "Supplementary1"
+author: "J.F. Ehmsen"
+date: "2025-05-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Load packages and functions
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(bayesplot, brms, cmdstanr, ggdist, gghalves, ggpol, ggpubr, ggridges,
+                 gridExtra, wesanderson, RColorBrewer, Rmisc, 
+                 readr, cowplot, patchwork, tidyverse, scales, osfr)
+  
+# functions
+functions = list.files(here::here("analysis","functions"), full.names = TRUE)
+sapply(functions, source)
+```
+
+# Load data and models
+
+```{r load_data}
+#df <- read_csv("/mnt/slow_scratch/ageing-and-neuropathy/phs-ageing_compiled-filtered.csv")
+df <- read_csv(file.path(here::here("data", "phs-ageing_compiled-filtered.csv"))) %>% filter(catch == 0)
+
+min_rt = df %>% group_by(subject) %>% summarize(minRT = min(tempRT))
+
+df = inner_join(df, min_rt)
+
+ages = df %>% mutate(more = NA,range_type = NA,subject = as.character(as.numeric(as.factor(subject))))%>% 
+  select(subject,age) %>% distinct() %>% 
+  mutate(age = as.factor(as.character(age)))
+
+```
+
+# Load models:
+```{r}
+# Retrieve the OSF authentication token if the file exists
+osf_file_path <- here::here("osf","osf.txt")
+
+if (file.exists(osf_file_path)) {
+  osf_token <- read_lines(osf_file_path)[1]
+} else {
+  stop("OSF token file does not exist!")
+}
+
+get_models(osf_token)
+
+model1 <- readRDS(here::here("saved_stanmodels","model1.rds"))
+model2 <- readRDS(here::here("saved_stanmodels","model2.rds"))
+
+```
+
+```{r}
+pal_pg <- brewer.pal(11, 'PRGn')
+pal_gr <- brewer.pal(9, 'Greens')
+pal_pu <- brewer.pal(9, 'BuPu')
+
+```
+
+
+```{r, fig.height=10, fig.width=10}
+subject_draws = as_draws_df(model2$draws(c("a_phs","b_phs","g_phs","l_phs",
+                                           "a_rt","b_rt","b1_rt","ndt",
+                                           "a_conf","b_conf","b1_conf",
+                                           "c0_conf","c1_conf"))) %>% 
+                select(-contains("."))
+
+
+draw_id = sample(1:4000,4000)
+
+params = subject_draws %>% 
+  mutate(draw = 1:n()) %>% 
+  filter(draw %in% draw_id) %>% 
+  pivot_longer(-draw) %>%  
+  mutate(
+    subject = str_extract(name, "\\[\\d+\\]") %>% str_remove_all("\\[|\\]"),
+    name = str_remove(name, "\\s*\\[\\d+\\]")) %>% 
+      # filter(subject %in% selected_subs) %>% 
+  pivot_wider(names_from = "name",values_from = "value")
+
+dq = inner_join(params,
+                df %>%
+                  mutate(subject = as.character(as.numeric(as.factor(subject)))) %>%
+                  select(subject,age) %>% distinct()) 
+
+params_fixed <- params %>%
+  group_by(subject) %>%
+  mutate(x = list(seq(0, 100, by = 1))) %>%
+  unnest(x) %>%
+  mutate(
+    p = prob_func(x, a_phs, b_phs, g_phs, l_phs)) %>% 
+  mutate(
+    rtP = a_rt+b_rt*(p) + b1_rt * x,
+    
+    cP = brms::inv_logit_scaled(a_conf+b_conf*(p) + b1_conf * x)
+         ) %>% 
+  mutate(
+    rt = rtP,
+    conf = cP * 100
+  )
+```
+
+
+```{r, fig.height=10, fig.width=10}
+df_plot = df %>% mutate(more = NA,range_type = NA) %>% 
+  mutate(subject = as.character(as.factor(subject)),
+         age = as.numeric(as.character(age))) %>%
+  group_by(subject) %>%
+  slice(1) %>%  # Get one row per subject for ranking
+  ungroup() %>%
+  arrange(age) %>%
+  mutate(subject_v2 = row_number()) %>%
+  select(subject, subject_v2) %>%
+  right_join(df) %>% 
+  mutate(facet_label = paste0("S-", ((subject_v2)), "(Age=", age, ")")) %>% 
+  mutate(facet_label = factor(facet_label, levels = unique(facet_label[order(subject_v2)])))
+
+
+
+# Your anchor colors (in order)
+cols <- c("#9EBCDA", "#8C6BB1", "#810F7C", "#4D004B")
+
+# Define anchor positions: 1, 19, 56, 75 scaled to [0, 1]
+anchor_pos <- c(1, 19, 56, 75) / 75
+
+# Create a color ramp function
+colfunc <- colour_ramp(cols)
+
+# Generate 75 interpolated colors
+colors_75 <- colfunc(seq(0, 1, length.out = 75))
+
+
+prob = inner_join(params_fixed, ages) %>%
+  mutate(subject = as.character(as.factor(subject)),
+         age = as.numeric(as.character(age))) %>%
+  group_by(subject) %>%
+  slice(1) %>%  # Get one row per subject for ranking
+  ungroup() %>%
+  arrange(age) %>%
+  mutate(subject_v2 = row_number()) %>%
+  select(subject, subject_v2) %>%
+  right_join(inner_join(params_fixed, ages) %>%
+               mutate(subject = as.character(as.factor(subject)),
+                      age = as.numeric(as.character(age))),
+             by = "subject") %>% 
+  mutate(facet_label = paste0("S-", ((subject_v2)), "(Age=", age, ")")) %>% 
+  mutate(facet_label = factor(facet_label, levels = unique(facet_label[order(subject_v2)])))%>%
+  # filter(subject %in% selected_subs) %>% 
+  group_by(x,age,facet_label) %>%
+  summarise(
+    mean = mean(p),
+    q5 = quantile(p, 0.05),
+    q95 = quantile(p, 0.95),
+    q10 = quantile(p, 0.10),
+    q90 = quantile(p, 0.90),
+    q20 = quantile(p, 0.20),
+    q80 = quantile(p, 0.80),
+    .groups = "drop"
+  )%>% ggplot(aes(x = x/100, y = mean, color = facet_label, fill = facet_label)) +
+  geom_line(show.legend = F) +
+  geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.1, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.3, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q20, ymax = q80), alpha = 0.5, color = NA, show.legend = F) +
+  ylab("Predicted probability of PHS") +
+  xlab("Thermal contrast") +
+  theme_classic() +
+  labs(title = "PHS probability", color = "Type", fill = "Type")+
+  facet_wrap(~facet_label)+
+
+  # scale_x_continuous(limits = c(0, 100)) +
+  scale_color_manual(values = colors_75)+
+  scale_fill_manual(values = colors_75)+
+  scale_x_continuous(breaks = c(0,.5,1), labels = c(0,.5,1))+
+  scale_y_continuous(breaks = c(0,0.5,1), labels = c(0,0.5,1))+
+  geom_point(data = df_plot,
+             aes(x = TC/100, y = PHS), show.legend = F, col = "black")+
+  theme(strip.text = element_text(size = 8),
+        axis.title = element_text(size = 13),
+        title = element_text(size = 14, hjust = .50),
+        axis.text = element_text(size = 12))
+
+
+prob
+```
+
+
+```{r, fig.height=10, fig.width=10}
+
+plot_df_rt = inner_join(
+  params_fixed %>% select(subject,ndt) %>% group_by(subject) %>% summarize(ndt = mean(ndt)) %>% distinct(),
+  df_plot %>% mutate(subject = as.character(as.numeric(as.factor(subject)))) %>% 
+    select(subject,tempRT,TC,age,facet_label)
+) %>% mutate(RT = tempRT-ndt) %>% 
+  mutate(age = as.factor(as.character(age)))
+
+rt = inner_join(params_fixed, ages) %>%
+  mutate(subject = as.character(as.factor(subject)),
+         age = as.numeric(as.character(age))) %>%
+  group_by(subject) %>%
+  slice(1) %>%  # Get one row per subject for ranking
+  ungroup() %>%
+  arrange(age) %>%
+  mutate(subject_v2 = row_number()) %>%
+  select(subject, subject_v2) %>%
+  right_join(inner_join(params_fixed, ages) %>%
+               mutate(subject = as.character(as.factor(subject)),
+                      age = as.numeric(as.character(age))),
+             by = "subject") %>% 
+  mutate(facet_label = paste0("S-", ((subject_v2)), "(Age=", age, ")")) %>% 
+  mutate(facet_label = factor(facet_label, levels = unique(facet_label[order(subject_v2)])))%>%
+  # filter(subject %in% selected_subs) %>% 
+  group_by(x,age,facet_label) %>%
+  summarise(
+    mean = mean(rt),
+    q5 = quantile(rt, 0.05),
+    q95 = quantile(rt, 0.95),
+    q10 = quantile(rt, 0.10),
+    q90 = quantile(rt, 0.90),
+    q20 = quantile(rt, 0.20),
+    q80 = quantile(rt, 0.80),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = x/100, y = mean, color = facet_label, fill = facet_label)) +
+  geom_line(show.legend = F) +
+  geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.1, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.3, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q20, ymax = q80), alpha = 0.5, color = NA, show.legend = F) +
+  ylab("Predicted log Response time") +
+  xlab("Thermal contrast") +
+  labs(title = "Response time") +
+  scale_color_manual(values = colors_75)+
+  scale_fill_manual(values = colors_75)+
+  # scale_x_continuous(limits = c(0, 100)) +
+  scale_x_continuous(breaks = c(0,.5,1), labels = c(0,.5,1))+
+  # scale_y_continuous(breaks = c(0,0.5,1), labels = c(0,0.5,1))+
+  # scale_y_continuous(limits = c(0,2))+
+  geom_point(data = plot_df_rt,
+             aes(x = TC/100, y = log(RT)), show.legend = F, col = "black")+
+  theme_classic() +
+  labs(color = "Type", fill = "Type")+
+  facet_wrap(~facet_label)+
+  theme(strip.text = element_text(size = 8),
+        axis.title = element_text(size = 13),
+        title = element_text(size = 14, hjust = .50),
+        axis.text = element_text(size = 12))
+
+
+rt
+
+```
+
+
+```{r, fig.height=10, fig.width=10}
+
+conf = inner_join(params_fixed, ages) %>%
+  mutate(subject = as.character(as.factor(subject)),
+         age = as.numeric(as.character(age))) %>%
+  group_by(subject) %>%
+  slice(1) %>%  # Get one row per subject for ranking
+  ungroup() %>%
+  arrange(age) %>%
+  mutate(subject_v2 = row_number()) %>%
+  select(subject, subject_v2) %>%
+  right_join(inner_join(params_fixed, ages) %>%
+               mutate(subject = as.character(as.factor(subject)),
+                      age = as.numeric(as.character(age))),
+             by = "subject") %>% 
+  mutate(facet_label = paste0("S-", ((subject_v2)), "(Age=", age, ")")) %>% 
+  mutate(facet_label = factor(facet_label, levels = unique(facet_label[order(subject_v2)])))%>%
+  # filter(subject %in% selected_subs) %>% 
+  group_by(x,age,facet_label) %>%
+  summarise(
+    mean = mean(conf),
+    q5 = quantile(conf, 0.05),
+    q95 = quantile(conf, 0.95),
+    q10 = quantile(conf, 0.10),
+    q90 = quantile(conf, 0.90),
+    q20 = quantile(conf, 0.20),
+    q80 = quantile(conf, 0.80),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = x/100, y = mean, color = facet_label, fill = facet_label)) +
+  geom_line(show.legend = F) +
+  geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.1, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.3, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q20, ymax = q80), alpha = 0.5, color = NA, show.legend = F) +
+  ylab("Predicted Confidence") +
+  xlab("Thermal contrast") +
+  labs(title = "Confidence") +
+  # scale_x_continuous(limits = c(0, 100)) +
+  scale_x_continuous(breaks = c(0,.5,1), labels = c(0,.5,1))+
+  scale_color_manual(values = colors_75)+
+  scale_fill_manual(values = colors_75)+
+
+  # scale_y_continuous(breaks = c(0,0.5,1), labels = c(0,0.5,1))+
+  geom_point(data = df_plot,
+             aes(x = TC/100, y = vasRating), col = "black", show.legend = F)+
+  theme_classic() +
+  labs(color = "Type", fill = "Type")+
+  facet_wrap(~facet_label)+
+  theme(strip.text = element_text(size = 8),
+        axis.title = element_text(size = 13),
+        title = element_text(size = 14, hjust = .50),
+        axis.text = element_text(size = 12))
+
+
+
+
+conf
+
+
+```
+
+
+
+```{r}
+
+
+ggsave(here::here("manuscript","figures","supplementary","S1_probabilities.png"),prob, width = 10,height = 10,dpi = 600)
+ggsave(here::here("manuscript","figures","supplementary","S1_responsetime.png"),rt, width = 10,height = 10,dpi = 600)
+ggsave(here::here("manuscript","figures","supplementary","S1_confidence.png"),conf, width = 10,height = 10,dpi = 600)
+
+```
+

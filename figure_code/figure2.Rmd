@@ -1,0 +1,496 @@
+---
+title: "PHS ageing figure 2"
+author: "A.G. Mitchell"
+date: "2025-05-21"
+output: html_document
+---
+
+# Load packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(gghalves, ggplot2, ggpubr, Hmisc, LaplacesDemon,
+                 pals, RColorBrewer, tidyverse)
+# palettes
+pal_or <- brewer.pal(8, 'OrRd')
+pal_rd <- brewer.pal(8, 'Reds')
+pal_bl <- brewer.pal(8, 'Blues')
+pal_pu <- brewer.pal(9, 'BuPu')
+```
+
+# load filtered and compiled data
+```{r}
+logitF <- function(p){
+  log(p/(1-p))
+      }
+
+ageDat <- read.csv(here::here(file.path("data","phs-ageing_compiled-filtered.csv"))) %>% filter(catch == 0)
+ageDat <- ageDat %>% 
+  dplyr::rename('age_group' = 'group') %>% 
+  mutate(TC = TC/100,
+         TC_bin = case_when(
+           TC >= 0 & TC < 0.1 ~ '.0-.1',
+           TC >= 0.1 & TC < 0.2 ~ '.1-.2',
+           TC >= 0.2 & TC < 0.3 ~ '.2-.3',
+           TC >= 0.3 & TC < 0.4 ~ '.3-.4',
+           TC >= 0.4 & TC < 0.5 ~ '.4-.5',
+           TC >= 0.5 & TC < 0.6 ~ '.5-.6',
+           TC >= 0.6 & TC < 0.7 ~ '.6-.7',
+           TC >= 0.7 & TC < 0.8 ~ '.7-.8',
+           TC >= 0.8 & TC < 0.9 ~ '.8-.9',
+           TC >= 0.9 & TC <= 1.0 ~ '.9-1'),
+         TC_bin_num = as.numeric(substr(TC_bin, 2, 2))+1, #binning TC for plotting purposes
+         logRT = log(tempRT),
+         logConf = case_when(
+           vasRating == 100 ~ 99.999,
+           vasRating == 0 ~ 0.001,
+           vasRating < 100 & vasRating > 0 ~ vasRating),
+         logConf = logitF(logConf/100)) #logit-transform 
+  
+
+# summaries
+tc_mean <- aggregate(TC ~ subject*age*temp_cond, mean, data = ageDat)
+rt_mean <- aggregate(logRT ~ subject*age*temp_cond, median, data = ageDat)
+conf_mean <- aggregate(vasRating ~ subject*age*temp_cond, median, data = ageDat)
+phs_count <- aggregate(PHS ~ subject*age*temp_cond, sum, data = ageDat)
+phs_count <- phs_count %>% 
+  mutate(phs_bin = ifelse(PHS > 0, 1, 0))
+
+all_sums <- tc_mean %>% 
+  left_join(rt_mean, by = c('subject', 'temp_cond', 'age')) 
+all_sums <- all_sums %>% 
+  left_join(phs_count, by = c('subject', 'temp_cond', 'age'))
+all_sums <- all_sums %>% 
+  left_join(conf_mean, by = c('subject', 'temp_cond', 'age'))
+
+# stratify by age
+all_sums <- all_sums %>% 
+  mutate(age_group = substr(subject, 5, 5))
+
+# summarising across thermal contrast bins for visualisation
+ageDat$count = 1 #adding counter to identify n trials per bin
+binned_rt <- aggregate(logRT ~ subject*age*age_group*TC_bin*TC_bin_num, median, data = ageDat)
+binned_phs <- aggregate(PHS ~ subject*age*age_group*TC_bin*TC_bin_num, sum, data = ageDat)
+binned_conf <- aggregate(vasRating ~ subject*age*age_group*TC_bin*TC_bin_num, median, data = ageDat)
+binned_trials <- aggregate(count ~ subject*age*age_group*TC_bin*TC_bin_num, sum, data = ageDat)
+
+all_binned <- binned_phs %>% 
+  left_join(binned_rt, by = c('subject','age_group','age','TC_bin', 'TC_bin_num'))
+all_binned <- all_binned %>% 
+  left_join(binned_conf, by = c('subject','age_group','age','TC_bin','TC_bin_num'))
+all_binned <- all_binned %>% 
+  left_join(binned_trials, by = c('subject','age_group','age','TC_bin','TC_bin_num')) %>% 
+  mutate(PHS_bi = ifelse(PHS > 0, 1, 0),
+         PHS_per = (PHS/count)*100) # finally, create PHS binary and PHS percentage
+
+ageDat$PHS <- as.factor(ageDat$PHS)
+```
+
+# PHS by thermal contrast (binned)
+```{r}
+  ggplot() +
+    geom_jitter(data = all_binned,
+             aes(TC_bin_num, PHS_per),
+             width = .2, alpha = .15, colour = 'grey30') +
+    stat_summary(data = all_binned,
+                 aes(TC_bin_num, PHS_per),
+               position = position_dodge(.7), size = .6, colour = pal_rd[7],
+               fun.data = "mean_cl_boot") +
+    stat_summary(data = all_binned,
+                 aes(TC_bin_num, PHS_per),
+               position = position_dodge(.7), size = .6, geom = 'line', colour = pal_rd[7],
+               fun = mean) +
+    #scale_colour_manual(name = 'PHS', values = c(pal_bl[7], pal_or[7])) +
+    scale_x_continuous(name = '', breaks = c(1:10),
+                       labels = c('.1','.2','.3','.4','.5','.6','.7','.8','.9','1')) +
+    scale_y_continuous(name = '% PHS trials') +
+    theme_classic() +
+    theme(legend.position = 'bottom',
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 11),
+        panel.border = element_rect(fill = NA, size = 1.2)) -> phs_fig
+phs_fig
+```
+
+# reaction time by thermal contrast (binned) and PHS
+```{r}
+  ggplot() +
+    geom_jitter(data = ageDat %>% filter(PHS == 0),
+             aes(TC_bin_num-0.2, logRT, group = as.factor(PHS), colour = as.factor(PHS)),
+             width = .1, alpha = .1, colour = pal_bl[5]) +
+    geom_jitter(data = ageDat %>% filter(PHS == 1),
+             aes(TC_bin_num+0.2, logRT, group = as.factor(PHS), colour = as.factor(PHS)),
+             width = .1, alpha = .1, colour = pal_rd[5]) +
+    stat_summary(data = all_binned,
+                 aes(TC_bin_num, logRT, group = as.factor(PHS_bi), colour = as.factor(PHS_bi)),
+                 geom = "line", position = position_dodge(.7), linewidth = .6, alpha = .8,
+                 fun = median) +
+    stat_summary(data = all_binned,
+                 aes(TC_bin_num, logRT, group = as.factor(PHS_bi), colour = as.factor(PHS_bi)),
+               position = position_dodge(.7), size = .6,
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+    scale_colour_manual(name = 'PHS', values = c(pal_bl[7], pal_rd[7])) +
+    scale_x_continuous(name = '', breaks = c(1:10),
+                       labels = c('.1','.2','.3','.4','.5','.6','.7','.8','.9','1')) +
+    scale_y_continuous(name = 'Log response time', breaks =c(-1,0,1,2), labels = c(' -1',' 0', ' 1', ' 2')) +
+    theme_classic() +
+    theme(legend.position = 'bottom',
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 11),
+        panel.border = element_rect(fill = NA, size = 1.2)) -> rt_phs_fig
+rt_phs_fig
+
+```
+
+# confidence by binned thermal contrast and PHS
+```{r}
+  ggplot() +
+    geom_jitter(data = ageDat %>% filter(PHS == 0),
+             aes(TC_bin_num-0.2, vasRating, group = as.factor(PHS), colour = as.factor(PHS)),
+             width = .1, alpha = .1, colour = pal_bl[5]) +
+    geom_jitter(data = ageDat %>% filter(PHS == 1),
+             aes(TC_bin_num+0.2, vasRating, group = as.factor(PHS), colour = as.factor(PHS)),
+             width = .1, alpha = .1, colour = pal_rd[5]) +
+    stat_summary(data = all_binned,
+                 aes(TC_bin_num, vasRating, group = as.factor(PHS_bi), colour = as.factor(PHS_bi)),
+                 geom = "line", position = position_dodge(.7), linewidth = .6, alpha = .8,
+                 fun = median) +
+    stat_summary(data = all_binned,
+                 aes(TC_bin_num, vasRating, group = as.factor(PHS_bi), colour = as.factor(PHS_bi)),
+               position = position_dodge(.7), size = .6,
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+    scale_colour_manual(name = 'PHS', values = c(pal_bl[7], pal_rd[7])) +
+    scale_x_continuous(name = 'Binned thermal contrast', breaks = c(1:10),
+                       labels = c('.1','.2','.3','.4','.5','.6','.7','.8','.9','1')) +
+    scale_y_continuous(name = 'Confidence (VAS)') +
+    theme_classic() +
+    theme(legend.position = 'bottom',
+        axis.title = element_text(size = 14),
+        axis.text.x = element_text(size = 12),
+        axis.text.y = element_text(size = 12),
+        legend.text = element_text(size = 11),
+        panel.border = element_rect(fill = NA, size = 1.2)) -> conf_phs_fig
+conf_phs_fig
+```
+
+# more plots
+```{r}
+# phs by condition
+ggplot() +
+  geom_jitter(data = all_sums %>% filter(temp_cond == 1), 
+               aes(as.numeric(age_group)-0.3, PHS, group = age_group, colour = as.factor(temp_cond)),
+              width = .05, alpha = .30) +
+  stat_summary(data = all_sums %>% filter(temp_cond == 1), 
+               aes(as.numeric(age_group)-0.3, PHS, group = age_group, colour = as.factor(temp_cond)),
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median, size = .6) +
+  geom_jitter(data = all_sums %>% filter(temp_cond == 2), 
+               aes(as.numeric(age_group)-0.1, PHS, group = age_group, colour = as.factor(temp_cond)),
+              width = .05, alpha = .25) +
+  stat_summary(data = all_sums %>% filter(temp_cond == 2), 
+               aes(as.numeric(age_group)-0.1, PHS, group = age_group, colour = as.factor(temp_cond)),
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median, size = .6) +
+  geom_jitter(data = all_sums %>% filter(temp_cond == 3), 
+               aes(as.numeric(age_group)+0.1, PHS, group = age_group, colour = as.factor(temp_cond)),
+              width = .05, alpha = .25) +
+  stat_summary(data = all_sums %>% filter(temp_cond == 3), 
+               aes(as.numeric(age_group)+0.1, PHS, group = age_group, colour = as.factor(temp_cond)),
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median, size = .6) +
+  geom_jitter(data = all_sums %>% filter(temp_cond == 4), 
+               aes(as.numeric(age_group)+0.3, PHS, group = age_group, colour = as.factor(temp_cond)),
+              width = .05, alpha = .25) +
+  stat_summary(data = all_sums %>% filter(temp_cond == 4), 
+               aes(as.numeric(age_group)+0.3, PHS, group = age_group, colour = as.factor(temp_cond)),
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median, size = .6) +
+  scale_colour_manual(name = 'Peak temperature', labels = c('I-1','I-2','N-1','N-2'), 
+                      values = c(pal_or[4],pal_or[5],pal_or[7],pal_or[8])) +
+  scale_x_discrete(name = '', limits = c('20-35','36-50','51-65','66-80')) +
+  scale_y_continuous(name = 'N PHS', breaks = c(0,5,10), labels = c(" 0"," 5","  10")) +
+  theme_classic() +
+  theme(legend.position = 'bottom',
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 11),
+        legend.title = element_blank(),
+        panel.border = element_rect(fill = NA, size = 1.2)) -> n_phs_fig
+n_phs_fig
+```
+
+
+```{r}
+# response time by condition
+ggplot() +
+    geom_jitter(data = all_sums %>% filter(temp_cond == 1), 
+             aes(as.numeric(age_group)-0.3, logRT, colour = as.factor(temp_cond)), 
+             width = .05, alpha = .25) +
+    stat_summary(data = all_sums %>% filter(temp_cond == 1), 
+               aes(as.numeric(age_group)-0.3, logRT, group = age_group, colour = as.factor(temp_cond)),
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+    geom_jitter(data = all_sums %>% filter(temp_cond == 2), 
+             aes(as.numeric(age_group)-0.1, logRT, colour = as.factor(temp_cond)), 
+             width = .05, alpha = .25) +
+    stat_summary(data = all_sums %>% filter(temp_cond == 2), 
+               aes(as.numeric(age_group)-0.1, logRT, group = age_group, colour = as.factor(temp_cond)), 
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+    geom_jitter(data = all_sums %>% filter(temp_cond == 3), 
+             aes(as.numeric(age_group)+0.1, logRT, colour = as.factor(temp_cond)), 
+             width = .05, alpha = .25) +
+    stat_summary(data = all_sums %>% filter(temp_cond == 3), 
+                aes(as.numeric(age_group)+0.1, logRT, group = age_group, colour = as.factor(temp_cond)),
+                size = .6, 
+                fun.min = function(z) { quantile(z,0.25) },
+                fun.max = function(z) { quantile(z,0.75) },
+                fun = median) +
+    geom_jitter(data = all_sums %>% filter(temp_cond == 4), 
+             aes(as.numeric(age_group)+0.3, logRT, colour = as.factor(temp_cond)), 
+             width = .05, alpha = .25) +
+    stat_summary(data = all_sums %>% filter(temp_cond == 4), 
+               aes(as.numeric(age_group)+0.3, logRT, group = age_group, colour = as.factor(temp_cond)), 
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+  scale_colour_manual(name = 'Peak temperature', labels = c('I-1','I-2','N-1','N-2'), 
+                      values = c(pal_or[4],pal_or[5],pal_or[7],pal_or[8])) +
+  scale_x_discrete(name = '', limits = c('20-35','36-50','51-65','66-80')) +
+  scale_y_continuous(name = 'Log response time', limits = c(-1.5,2), breaks = c(-1,0,1,2),
+                     labels = c("  -1"," 0"," 1"," 2")) +
+  labs(colour = 'Contrast condition') +
+  #ylim(0,15) +
+  theme_classic() +
+  theme(legend.position = 'bottom',
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 11),
+        legend.title = element_blank(),
+        panel.border = element_rect(fill = NA, size = 1.2)) -> rt_all_fig
+rt_all_fig
+```
+
+# confidence by condition
+```{r}
+ggplot() +
+    geom_jitter(data = all_sums %>% filter(temp_cond == 1), 
+             aes(as.numeric(age_group)-0.3, vasRating, colour = as.factor(temp_cond)), 
+             width = .05, alpha = .25) +
+    stat_summary(data = all_sums %>% filter(temp_cond == 1), 
+               aes(as.numeric(age_group)-0.3, vasRating, group = age_group, colour = as.factor(temp_cond)),
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+    geom_jitter(data = all_sums %>% filter(temp_cond == 2), 
+             aes(as.numeric(age_group)-0.1, vasRating, colour = as.factor(temp_cond)), 
+             width = .05, alpha = .25) +
+    stat_summary(data = all_sums %>% filter(temp_cond == 2), 
+               aes(as.numeric(age_group)-0.1, vasRating, group = age_group, colour = as.factor(temp_cond)),
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+    geom_jitter(data = all_sums %>% filter(temp_cond == 3), 
+             aes(as.numeric(age_group)+0.1, vasRating, colour = as.factor(temp_cond)), 
+             width = .05, alpha = .25) +
+    stat_summary(data = all_sums %>% filter(temp_cond == 3), 
+               aes(as.numeric(age_group)+0.1, vasRating, group = age_group, colour = as.factor(temp_cond)),
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+    geom_jitter(data = all_sums %>% filter(temp_cond == 4), 
+             aes(as.numeric(age_group)+0.3, vasRating, colour = as.factor(temp_cond)), 
+             width = .05, alpha = .25) +
+    stat_summary(data = all_sums %>% filter(temp_cond == 4), 
+               aes(as.numeric(age_group)+0.3, vasRating, group = age_group, colour = as.factor(temp_cond)),
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+
+  scale_colour_manual(name = 'Peak temperature', labels = c('I-1','I-2','N-1','N-2'), 
+                      values = c(pal_or[4],pal_or[5],pal_or[7],pal_or[8])) +
+  scale_x_discrete(name = 'Age group', limits = c('20-35','36-50','51-65','66-80')) +
+  scale_y_continuous(name = 'Confidence (VAS)') +
+  labs(colour = 'Contrast condition') +
+  #ylim(0,15) +
+  theme_classic() +
+  theme(legend.position = 'bottom',
+        axis.title = element_text(size = 14),
+        axis.text.x =  element_text(size = 12),
+        axis.text.y =  element_text(size = 12),
+        legend.text = element_text(size = 11),
+        legend.title = element_blank(),
+        panel.border = element_rect(fill = NA, size = 1.2)) -> conf_all_fig
+conf_all_fig
+```
+
+# look at effects by phs and ageing
+```{r}
+phs_summary <- aggregate(TC~subject*age*age_group*PHS, mean, data = ageDat)
+phs_summary$PHS <- as.factor(phs_summary$PHS)
+
+ggplot() +
+  geom_jitter(data = phs_summary %>% filter(PHS == 0),
+              aes(as.numeric(age_group)-.1, TC, group = age_group, fill = PHS, colour = PHS),
+              alpha = .35, width = .06, colour = pal_bl[5]) +
+  stat_summary(data = phs_summary %>% filter(PHS == 0), 
+               aes(as.numeric(age_group)-.1, TC, group = age_group, colour = PHS),
+               fun.data = "mean_cl_boot", size = .6) +
+  geom_jitter(data = phs_summary %>% filter(PHS == 1),
+              aes(as.numeric(age_group)+.1, TC, group = age_group, fill = PHS, colour = PHS),
+              alpha = .35, width = .06, colour = pal_or[5]) +
+  stat_summary(data = phs_summary %>% filter(PHS == 1), 
+               aes(as.numeric(age_group)+0.1, TC, group = age_group, colour = PHS),
+               fun.data = "mean_cl_boot", size = .6) +
+  scale_colour_manual(values = c(pal_bl[7],pal_or[7])) +
+  scale_fill_manual(values = c(pal_bl[4],pal_or[4])) +
+  scale_x_discrete(name = '', limits = c('20-35','36-50','51-65','66-80')) +
+  scale_y_continuous(name = 'Thermal contrast', limits = c(0,1), breaks = c(0,0.25,0.5,0.75,1),
+                     labels = c("0",".25",".50",".75","1")) +
+  #ylim(0,15) +
+  theme_classic() +
+  theme(legend.position = '',
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 11),
+        panel.border = element_rect(fill = NA, size = 1.2)) -> tc_age_indiv
+tc_age_indiv
+```
+
+```{r}
+rt_summary <- aggregate(logRT~subject*age*age_group*PHS, median, data = ageDat)
+rt_summary$PHS <- as.factor(rt_summary$PHS)
+
+ggplot() +
+  geom_jitter(data = rt_summary %>% filter(PHS == 0),
+              aes(as.numeric(age_group)-.1, logRT, group = age_group, fill = PHS, colour = PHS),
+              alpha = .30, width = .06, colour = pal_bl[5]) +
+  stat_summary(data = rt_summary %>% filter(PHS == 0), 
+               aes(as.numeric(age_group)-.1, logRT, group = age_group, colour = PHS),
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+  geom_jitter(data = rt_summary %>% filter(PHS == 1),
+              aes(as.numeric(age_group)+.1, logRT, group = age_group, fill = PHS, colour = PHS),
+              alpha = .30, width = .06, colour = pal_or[5]) +
+  stat_summary(data = rt_summary %>% filter(PHS == 1), 
+               aes(as.numeric(age_group)+0.1, logRT, group = age_group, colour = PHS),
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+  scale_colour_manual(values = c(pal_bl[7],pal_or[7])) +
+  scale_fill_manual(values = c(pal_bl[5],pal_or[5])) +
+  scale_x_discrete(name = '', limits = c('20-35','36-50','51-65','66-80')) +
+  scale_y_continuous(name = 'Log response time', limits = c(-1.5,2), breaks = c(-1,0,1,2),
+                     labels = c(" -1"," 0"," 1"," 2")) +
+  #ylim(0,15) +
+  theme_classic() +
+  theme(legend.position = 'bottom',
+        axis.title = element_text(size = 14),
+        axis.text = element_text(size = 12),
+        legend.text = element_text(size = 11),
+        panel.border = element_rect(fill = NA, size = 1.2)) -> rt_age_indiv
+rt_age_indiv
+```
+
+```{r}
+conf_summary <- aggregate(vasRating~subject*age*age_group*PHS, median, data = ageDat)
+conf_summary$PHS <- as.factor(conf_summary$PHS)
+
+ggplot() +
+  geom_jitter(data = conf_summary %>% filter(PHS == 0),
+              aes(as.numeric(age_group)-.1, vasRating, group = age_group, fill = PHS, colour = PHS),
+              alpha = .30, width = .06, colour = pal_bl[5]) +
+  stat_summary(data = conf_summary %>% filter(PHS == 0), 
+               aes(as.numeric(age_group)-.1, vasRating, group = age_group, colour = PHS),
+               size = .6, 
+               fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+  geom_jitter(data = conf_summary %>% filter(PHS == 1),
+              aes(as.numeric(age_group)+.1, vasRating, group = age_group, fill = PHS, colour = PHS),
+              alpha = .30, width = .06, colour = pal_or[5]) +
+  stat_summary(data = conf_summary %>% filter(PHS == 1), 
+               aes(as.numeric(age_group)+0.1, vasRating, group = age_group, colour = PHS),
+              size = .6, 
+              fun.min = function(z) { quantile(z,0.25) },
+               fun.max = function(z) { quantile(z,0.75) },
+               fun = median) +
+  scale_colour_manual(values = c(pal_bl[7],pal_or[7])) +
+  scale_fill_manual(values = c(pal_bl[5],pal_or[5])) +
+  scale_x_discrete(name = 'Age group', limits = c('20-35','36-50','51-65','66-80')) +
+  scale_y_continuous(name = 'Confidence (VAS)') +
+  #ylim(0,15) +
+  theme_classic() +
+  theme(legend.position = 'bottom',
+        axis.title = element_text(size = 14),
+        axis.text.y = element_text(size = 12),
+        axis.text.x = element_text(size = 12),
+        legend.text = element_text(size = 11),
+        panel.border = element_rect(fill = NA, size = 1.2)) -> conf_age_indiv
+conf_age_indiv
+```
+
+# put them all together
+```{r}
+fig2.1 <- ggarrange(n_phs_fig, rt_all_fig, conf_all_fig,
+                    ncol = 1, nrow = 3,
+                    common.legend = TRUE,
+                    legend = 'bottom')
+fig2.1 <-  annotate_figure(fig2.1, top = text_grob("Age and peak temperature", 
+               face = "bold", size = 13, hjust = 0.4))
+  
+fig2.2 <- ggarrange(phs_fig, rt_phs_fig, conf_phs_fig,
+                     ncol = 1, nrow = 3,
+                     common.legend = TRUE,
+                     legend = 'bottom')
+fig2.2 <-  annotate_figure(fig2.2, top = text_grob("Effect of thermal contrast", 
+               face = "bold", size = 13, hjust = 0.4))
+
+
+fig2.3 <- ggarrange(tc_age_indiv, rt_age_indiv, conf_age_indiv,
+                    ncol = 1, nrow = 3,
+                    common.legend = TRUE,
+                    legend = 'bottom')
+
+fig2.3 <- annotate_figure(fig2.3, top = text_grob("Age and PHS", 
+               face = "bold", size = 13, hjust = 0.35))
+
+
+# combine with above
+fig2 <- ggarrange(fig2.2, NA, fig2.1, NA, fig2.3,
+                  ncol = 5, nrow = 1,
+                  widths = c(1.2,0.06,1.25,0.06,1.05),
+                  labels = c('A.',NA,'B.',NA,'C.'),
+                  vjust = c(1.1,NA,1.1,NA,1.1),
+                  font.label = list(size = 16))
+fig2 
+ggsave(file.path(here::here('manuscript', 'figures', 'figure2.png')), 
+       fig2, device = NULL, width = 9.2, height = 8.2, dpi = 600)
+
+#ggsave(file.path(here::here('manuscript', 'figures', 'figure2.tiff')), 
+#       fig2, device = NULL, width = 10.1, height = 9.5, dpi = 600)
+```

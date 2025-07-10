@@ -1,0 +1,281 @@
+---
+title: "Individual differences plot"
+author: "A.G. Mitchell"
+date: "2025-02-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(bayesplot, brms, cmdstanr, extraDistr, furrr, ggpubr, ggplot2, pracma, 
+               RColorBrewer, tidyverse)
+
+# adding functions to path
+
+sapply(list.files(here::here("analysis","functions"), full.names = T), source)
+
+
+source(here::here("preregistration",
+                  "Recovery_Power", 'power_parameter_scripts.R'))
+```
+
+# load simulated individual differences results
+```{r}
+results = load(here::here("preregistration",
+                          "Recovery_Power",
+                          "individual-differences","workspace.RData"))
+
+# palettes
+pair_pal <- brewer.pal(11,'PRGn')
+```
+
+# model comparison when model is 1
+```{r}
+ll1 = loos %>% 
+  mutate(elpd_diff = ifelse(model == "m1", -elpd_diff,elpd_diff)) %>% 
+  filter(elpd_diff != 0)
+
+id_arrange = ll1 %>% arrange(elpd_diff) %>% .$id
+ll1$id <- factor(ll1$id, levels = id_arrange)
+
+
+plot_model1 = ll1 %>% 
+  filter(mean_div == 0) %>% 
+  ggplot(aes(y = id, 
+             x = elpd_diff, 
+             xmin = elpd_diff-2*se_diff, 
+             xmax = elpd_diff+2*se_diff))+
+  geom_pointrange(shape = 21, 
+                  alpha = .75, 
+                  colour = pair_pal[10], 
+                  fill = pair_pal[10])+
+  theme_classic()+
+  labs(y='Participant')+
+  xlim(-20,20)+
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 0.8)+
+  theme(axis.text.y = element_blank(),
+        axis.text.x = element_text(size = 9),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(hjust = .5, vjust = 2, size = 14),
+        plot.margin = margin(b = 1.5, unit = "cm")
+        #plot.margin = margin(b = 1, unit = "cm") #not needed when combined
+  )+
+  #annotate("text", x = -10, y = -12, label = "Favours model 1") +
+  #annotate("text", x = 10, y = -12, label = "Favours model 2") +
+  #geom_segment(x = -0.5, xend = -20, y = -8, yend=  -8,
+  #  arrow = arrow(length = unit(3, "pt")))+
+  #geom_segment(x = 0.5, xend = 20, y = -8, yend=  -8,
+  #  arrow = arrow(length = unit(3, "pt")))+
+  coord_cartesian(ylim = c(-1, 84), clip = "off")
+
+plot_model1
+```
+# model comparison when model is 1
+```{r}
+ll2 = loos %>% 
+  mutate(elpd_diff = ifelse(model == "m2", -elpd_diff,elpd_diff)) %>% 
+  filter(elpd_diff != 0)
+
+id_arrange = ll2 %>% arrange(elpd_diff) %>% .$id
+ll2$id <- factor(ll2$id, levels = id_arrange)
+
+
+plot_model2 = ll2 %>% 
+  filter(mean_div == 0) %>% 
+  ggplot(aes(y = id, 
+             x = elpd_diff, 
+             xmin = elpd_diff-2*se_diff, 
+             xmax = elpd_diff+2*se_diff))+
+  geom_pointrange(shape = 21, 
+                  alpha = .7, 
+                  colour = pair_pal[1], 
+                  fill = pair_pal[1])+
+  theme_classic()+
+  labs(y='Participant',title="Simualted model 2")+
+  xlim(-20,20)+
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 0.8)+
+  theme(axis.text.y = element_blank(),
+        axis.text.x = element_text(size = 9),
+        axis.title.y = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_blank(),
+        plot.margin = margin(b = 1.5, unit = "cm") #remove cause not needed when combined
+        )+
+  annotate("text", x = -10, y = -14, label = "Favours model 1") +
+  annotate("text", x = 10, y = -14, label = "Favours model 2") +
+  geom_segment(x = -0.5, xend = -20, y = -10, yend= -10,
+    arrow = arrow(length = unit(3, "pt")))+
+  geom_segment(x = 0.5, xend = 20, y = -10, yend= -10,
+    arrow = arrow(length = unit(3, "pt")))+
+  coord_cartesian(ylim = c(-1, 84), clip = "off")
+
+plot_model2
+```
+
+# non-responders: check estimate of RT and confidence 
+# model 1 - run
+```{r}
+ids = df %>% 
+  group_by(id) %>% 
+  summarize(phs = sum(phs)) %>% 
+  filter(phs == 0) %>% 
+  .$id
+
+data1 = data.frame()
+for(i in ids){
+  
+   print(i)
+  
+  df1 = df %>% filter(id == i)
+  
+  df1 %>% pivot_longer(cols = c(phs,rt,conf)) %>% 
+    ggplot(aes(x = x, y = value))+
+    geom_point()+
+    facet_wrap(~name,scales = "free", ncol = 1)
+  
+  stanHmodel1 <- cmdstanr::cmdstan_model(here::here("preregistration","Recovery_Power",                                        "individual-differences","single_sub_stanmodels","m1_ss.stan")) 
+  
+  #initiate model
+  fit_m1 = stanHmodel1$sample(data = list(N = nrow(df1), 
+                                        tcf = df1$x,
+                                        phs = df1$phs,
+                                        rt = df1$rt,
+                                        conf = df1$conf,
+                                        min_rt = unique(df1$min_rt)),
+                          refresh = 100,
+                          iter_warmup = 1000,
+                          iter_sampling = 1000,
+                          parallel_chains = 4,
+                          adapt_delta = 0.99,
+                          max_treedepth = 12,
+                          init = 0)
+  
+  tmp1 = data.frame(fit_m1$summary(c("b1_conf","b1_rt"))) %>% 
+    mutate(id = i,
+           max_div = max(fit_m1$diagnostic_summary()$num_divergent),
+           max_tree = max(fit_m1$diagnostic_summary()$num_max_treedepth))
+  
+  data1 = rbind(data1,tmp1)
+}
+head(data1)
+```
+
+# model 2 - run
+```{r}
+data2 = data.frame()
+for(i in ids){
+  
+   print(i)
+  
+  df1 = df %>% filter(id == i)
+  
+  df1 %>% pivot_longer(cols = c(phs,rt,conf)) %>% 
+    ggplot(aes(x = x, y = value))+
+    geom_point()+
+    facet_wrap(~name,scales = "free", ncol = 1)
+  
+  stanHmodel2 <- cmdstanr::cmdstan_model(here::here("preregistration","Recovery_Power",                                        "individual-differences","single_sub_stanmodels","m1_ss.stan")) 
+  
+  #initiate model
+  fit_m2 = stanHmodel2$sample(data = list(N = nrow(df1), 
+                                        tcf = df1$x,
+                                        phs = df1$phs,
+                                        rt = df1$rt,
+                                        conf = df1$conf,
+                                        min_rt = unique(df1$min_rt)),
+                          refresh = 100,
+                          iter_warmup = 1000,
+                          iter_sampling = 1000,
+                          parallel_chains = 4,
+                          adapt_delta = 0.99,
+                          max_treedepth = 12,
+                          init = 0)
+  
+  tmp2 = data.frame(fit_m2$summary(c("b1_conf","b1_rt"))) %>% 
+    mutate(id = i,
+           max_div = max(fit_m2$diagnostic_summary()$num_divergent),
+           max_tree = max(fit_m2$diagnostic_summary()$num_max_treedepth))
+  
+  data2 = rbind(data2,tmp2)
+}
+head(data2)
+```
+
+```{r}
+# plot model 1
+data1 <- data1 %>% 
+  mutate(variable = fct_recode(variable, 'confidence' = 'b1_conf',
+                               'response time' = 'b1_rt'),
+         variable = factor(variable, levels = c('response time','confidence'))
+         )
+data2 <- data2 %>% 
+  mutate(variable = fct_recode(variable, 'confidence' = 'b1_conf',
+                               'response time' = 'b1_rt'),
+         variable = factor(variable, levels = c('response time','confidence'))
+         )
+```
+
+
+```{r}
+nr1_plot <- data1 %>% 
+  ggplot(aes(y = id,x = mean,xmin = q5, xmax = q95))+
+  geom_pointrange(shape = 21, 
+                  alpha = .7, 
+                  colour = pair_pal[10], 
+                  fill = pair_pal[10])+
+  facet_wrap(~variable)+
+  geom_vline(xintercept = 0, linetype = 2)+
+  labs(y = "", x = '', title = "Non-responders")+
+  theme_classic()+
+  theme(plot.title = element_text(hjust = .5, vjust = 2, size = 14),
+        axis.title = element_text(size = 12),
+        axis.title.x = element_blank(),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank())
+
+# plot model 2
+nr2_plot <- data2 %>% 
+  ggplot(aes(y = id,x = mean,xmin = q5, xmax = q95))+
+  geom_pointrange(shape = 21, 
+                  alpha = .7, 
+                  colour = pair_pal[1], 
+                  fill = pair_pal[1])+
+  facet_wrap(~variable)+
+  geom_vline(xintercept = 0, linetype = 2) +
+  labs(y = "", x = 'Mean', title = "Fitted model 2")+
+  theme_classic()+
+  theme(axis.title = element_text(size = 12),
+        axis.text.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_blank())
+```
+
+
+```{r}
+# combine
+id_plot <- ggarrange(plot_model1, plot_model2,
+                             nrow = 2, ncol = 1,
+                     heights = c(1, 1))
+id_plot
+
+# combine the two
+nr_all_plot <- ggarrange(nr1_plot, NA, nr2_plot,
+                     nrow = 3, ncol = 1,
+                     heights = c(1, 0.1, 1))
+nr_all_plot
+
+plot_name1 = here::here("preregistration","Recovery_Power","plots",
+                       "individual-differences.png")
+ggsave(plot_name1, plot = id_plot, device = NULL, 
+       width = 3.5, height = 6, dpi = 600)
+
+plot_name2 = here::here("preregistration","Recovery_Power","plots",
+                       "non-responders.png")
+ggsave(plot_name2, plot = nr_all_plot, device = NULL, 
+       width = 3.5, height = 6, dpi = 600)
+```
+
+

@@ -1,0 +1,173 @@
+---
+title: "Plotting"
+author: "A.G. Mitchell"
+date: "2025-03-06"
+output: html_document
+---
+
+Extracts chosen peak temperatures used to define contrast conditions, for all participants
+And plots them
+
+# load packages
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(ggplot2, reshape2, RColorBrewer, tidyverse, stringr,ggpubr)
+```
+
+# Loading compiled data
+```{r load data}
+dat_hc <- read.csv(file.path(here::here("data", "phs-ageing_compiled-data.csv")))
+
+head(dat_hc) #check correct data-file
+
+
+# load in psi thresholding data from example participant
+wdt <- read.table(file = file.path(here::here("data", "example_wdt_fit.tsv")), sep = '\t', header = TRUE)
+hpt <- read.table(file = file.path(here::here("data", "example_hpt_fit.tsv")), sep = '\t', header = TRUE)
+vals <- read.table(file = file.path(here::here("data", "example_thr.tsv")), sep = '\t', header = TRUE)
+```
+
+# HEALTHY
+# plot the peak temperatures chosen for each participant
+```{r peaktemp plotting}
+condDat <- aggregate(tmax_temp ~ subject*temp_cond*age*group, data = dat_hc, mean)
+head(condDat)
+# load palette
+pal <- brewer.pal(8, 'OrRd')
+pal_bl <- brewer.pal(8, 'Blues')
+
+# now plot!
+ggplot(data = condDat, aes(as.factor(temp_cond), tmax_temp,
+                           colour = as.factor(temp_cond),
+                           fill = as.factor(temp_cond))) +
+  
+  geom_line(aes(group = subject), 
+            position = position_dodge(.2), alpha = .2, linewidth = .5) +
+  geom_boxplot(width = .5, size = .8, outlier.shape = NA,
+               fill = 'white') +
+  geom_point(aes(group = subject), 
+             shape = 21, position = position_dodge(.2), size = 2,
+             fill = 'white', stroke = .8) +
+  
+  scale_colour_manual(values = c(pal[4],pal[5],pal[7],pal[8])) +
+  scale_fill_manual(values = c(pal[4],pal[5],pal[7],pal[8])) +
+  scale_x_discrete(name = 'Peak temperature conditions' ,labels = c("I-1","I-2","N-1","N-2")) +
+  scale_y_continuous(name = 'Temperature (ºC)', limits = c(32,52)) +
+  theme_classic() +
+  theme(legend.position = 'none',
+        panel.border = element_rect(fill=NA, linewidth = 1),
+        axis.text = element_text(size=11),
+        axis.title = element_text(size=12)) -> pTemp_plot
+pTemp_plot
+
+# save figure
+ggsave(pTemp_plot, filename = file.path(here::here("data","chosen_temps.png")), dpi = 600,
+       width = 6, height = 3.5)
+```
+
+# plot example wdt and hpt from a single participant, with flagged contrast conditions
+```{r}
+wdt %>% 
+  ggplot(aes(wdt_levels, wdt_fit)) +
+  geom_line(linewidth = 1, colour = 'grey20', alpha = .75) +
+  geom_vline(data = vals, aes(xintercept = wdt),
+             linewidth = 1.1, colour = pal[4]) +
+  geom_vline(data = vals, aes(xintercept = wdt+(1/wds*3)),
+             linewidth = 1.1, colour = pal[5]) +
+  scale_x_continuous(name = 'Temperature (ºC)', expand = c(0.01,0.01),
+                     limits =c(30,40), breaks = c(30,35,40)) +
+  scale_y_continuous(name = 'Probability', expand = c(0.01,0.01),
+                     limits = c(0,1), breaks = c(0,.5,1), labels = c('0','.5','1')) +
+  labs(title = 'Warm detection') +
+  theme_classic() +
+  theme(axis.text = element_text(size=11),
+        axis.title = element_text(size=12),
+        axis.title.x = element_blank(),
+        plot.title = element_text(size = 12, hjust = .5),
+        panel.border = element_rect(fill = NA, linewidth = 1)) -> wd_plot
+
+hpt %>% 
+  ggplot(aes(hpt_levels, hpt_fit)) +
+  geom_line(linewidth = 1, colour = 'grey20', alpha = .75) +
+  geom_vline(data = vals, aes(xintercept = hpt),
+             linewidth = 1.1, colour = pal[7]) +
+  geom_vline(data = vals, aes(xintercept = hpt+(1/hps*2)),
+             linewidth = 1.1, colour = pal[8]) +
+  scale_x_continuous(name = 'Temperature (ºC)', expand = c(0.01,0.01),
+                     limits =c(35,45), breaks = c(35,40,45)) +
+  scale_y_continuous(name = 'Probability', expand = c(0.01,0.01),
+                     limits = c(0,1), breaks = c(0,.5,1), labels = c('0','.5','1')) +
+  labs(title = 'Heat pain') +
+  theme_classic() +
+  theme(axis.text = element_text(size=11),
+        axis.title.y = element_blank(),
+        axis.title.x = element_blank(),
+        plot.title = element_text(size = 12, hjust = .5),
+        panel.border = element_rect(fill = NA, linewidth = 1)) -> hp_plot
+
+# put them together and display
+fig1.1 <- ggarrange(wd_plot, hp_plot,
+                    ncol = 2, nrow = 1,
+                    widths = c(1.05,1))
+fig1.1 <- annotate_figure(fig1.1, bottom = text_grob("Temperature (ºC)", size = 12))
+fig1.1
+```
+# combine chosen temps and threshold plot
+```{r}
+figure1 <- ggarrange(fig1.1, NA, pTemp_plot,
+                     ncol = 3, nrow = 1,
+                     widths = c(1,.06,1))
+figure1
+figName = file.path(here::here('manuscript', 'figures', 'figure1AB.png'))
+ggsave(figName, figure1, device = NULL, width = 11, height = 3, dpi = 600,
+       bg="white")
+```
+
+# create example PHS trial
+```{r}
+time <- c(0,3,6,6.3,12)
+temp <- c(32,38,32,32,26.30)
+col <- c(1,1,2,2,2)
+phs_trial <- data.frame(time, temp, col)
+
+phs_trial %>% 
+  ggplot(aes(time, temp, colour = col)) +
+  geom_hline(yintercept = 32, linetype = 'dashed', linewidth = 1, alpha = .6) +
+  geom_line(linewidth = 1.5) +
+  geom_point(aes(x = 6, y = 32), shape = 23, size = 3.5, colour = 'grey40', fill = 'grey45') +
+  geom_point(aes(x = 12, y = 26.30), shape = 21, size = 4, colour = pal_bl[7], fill = pal_bl[7]) +
+  scale_x_continuous(name = 'Time (s)', limits = c(0,20), breaks = c(0,10,20)) +
+  scale_y_continuous(name = 'Temperature (ºC)', limits = c(20,45), breaks = c(20,30,40)) +
+  scale_color_gradientn(colours = c(pal[7],pal_bl[7]), values = c(0,1)) +
+  theme_classic() +
+  theme(axis.text = element_text(size=11),
+        axis.title = element_text(size=12),
+        plot.title = element_text(size = 12, hjust = .5),
+        panel.border = element_rect(fill = NA, linewidth = 1),
+        legend.position = 'none') +
+  annotate("text", x = 18, y = 33, label = "baseline (32 ºC)", size = 4, alpha = .6) -> phsT_plot
+
+#save
+figName = file.path(here::here('manuscript', 'figures', 'figure1C.png'))
+ggsave(figName, phsT_plot, device = NULL,
+       width = 5.5, height = 3.5, dpi = 600, bg = 'white')
+```
+
+# peak temperature by age analysis - to go in supplemental
+```{r}
+condDat %>% dplyr::rename("age_group" = "group") %>% 
+  group_by(age_group,temp_cond) %>% 
+  summarise(mean = mean(tmax_temp),
+            sd = sd(tmax_temp)) %>% 
+  ggplot(aes(colour=as.factor(temp_cond), group = as.factor(temp_cond))) +
+  geom_pointrange(aes(x = age_group,y = mean, ymin=mean-sd, ymax=mean+sd)) +
+  geom_line(aes(x = age_group, y=mean))
+
+m1 <- lm(tmax_temp ~ age*as.factor(temp_cond), data = condDat)
+summary(m1)
+```
+
+

@@ -1,0 +1,107 @@
+
+
+```{r load data, warning = F, message = F, echo = F}
+load(here::here("manuscript","objects","demo.RData"))
+loo_results <- readRDS(here::here("manuscript","objects","loo_results.rds"))
+age_results <- readRDS(here::here("manuscript","objects","age_results.rds"))
+
+marginal_difference <- readRDS(here::here("manuscript","objects","marginal_difference.rds"))
+slope_results <- readRDS(here::here("manuscript","objects","slope_results.rds"))
+
+correlation_indi <- readRDS(here::here("manuscript","objects","correlation_indi.rds"))
+
+phs_nr <- ageDat %>% 
+  group_by(subject) %>% 
+  summarise(tot_phs = sum(PHS)) %>% 
+  mutate(phs_01 = ifelse(tot_phs > 1, 1, 0))
+per_phs <- sum(phs_nr$phs_01)/length(phs_nr$phs_01)*100
+```
+
+## Ageing, thermal contrast and PHS
+
+To characterise the experience of thermosensory illusions across the lifespan, we tested a  perceptual decision-making paradigm in 75 participants (ages 21-80). Participants experienced dynamic thermal stimulation consisting of alternating warming and cooling temperature ramps. Participants were asked to indicate when they noticed a change in temperature, during the cooling phase, and whether it felt cold (i.e., veridical sensation) or warm (i.e., PHS) ([Fig. 1](#Figure1)). The magnitude of the difference between alternating warm and cold temperatures, referred to as thermal contrast, was manipulated across trials by varying the peak temperature of the warming phase (Fig. 1 A & B), spanning from innocuous to mildly noxious levels. Although all perceptual decisions were made during cooling, participants were unaware of the underlying direction of temperature change. This design dissociated physical input from perceptual interpretation, allowing us to probe how subjective thermal experiences, veridical or illusory, emerge from alternating thermal stimulation. 
+
+A total of 64/75 participants (`r round(64/75,2)*100`%) reported experiencing a PHS at least once. Out of all experimental trials (56 per participant), `r p_PHS* 100`% were experienced as PHS. Both the rate of reported PHS and PHS prevalence increased with increasing peak temperature (Fig. S1). [Figure 2](#figure2) provides a comprehensive overview of the relationship between thermal contrast, peak temperature and age on PHS, response time and confidence.  
+
+<a id="Figure1"></a> 
+
+```{r figure1, fig.width = 7.2, fig.height = 7.2, warning = F, message = F, echo = F, fig.cap = "**Task overview and thermal stimulation parameters.** (A) Example psychometric functions used to select participant-specific peak temperature, derived from prior thresholding. Vertical lines represent the four peak temperatures used to manipulate thermal contrast across trials. Two peak temperatures in the innocuous range (I) were derived from warm detection thresholds and slopes, while two peak temperatures in the noxious range (N) were derived from heat pain thresholds and slopes. (B) Selected peak temperatures for all participants. (C) Time course of stimulation for a single representative trial, showing the alternating warm (red) and cold (blue) temperature ramps. The magnitude of thermal contrast (TC) was defined as the difference between peak warm and cool temperatures, divided by the total thermal range (Eq. 1). (D) Trial sequence. Following a brief warming phase, a cooling stimulus was delivered. Participants were instructed to press a key when they detected a change in temperature, then report whether the change felt cold (veridical) or warm (PHS), followed by a confidence rating. For illustrative purposes, the colour of the screen border represents whether the probe was above (red), below (blue) or at baseline temperature (grey)."}
+ggdraw() +
+    draw_image(magick::image_read(here::here("manuscript","figures","figure1.png")), scale = 1)
+```
+
+<a id="Figure2"></a> 
+
+```{r figure2, fig.width = 7.2, fig.height = 7.2, warning = F, message = F, echo = F, fig.cap = "**Effects of thermal contrast, peak temperature and age on PHS, response time and confidence.** (A) Percentage of PHS trials, log-transformed response time and confidence VAS ratings plotted against binned thermal contrast levels. (B) Relationship between age group and responses grouped by peak temperature condition (I-1, I-2, N-1 and N-2). (C) Effects of age and PHS on thermal contrast, response time and confidence ratings. Small dots show individual participant means (% PHS and thermal contrast) or medians (N PHS; response time and confidence); large dots represent group means with 95% confidence intervals (% PHS and thermal contrast) or medians with interquartile ranges (N PHS, response time and confidence). Binning and grouping are used for visualisation only; all variables were modelled as continuous in the analyses."}
+ggdraw() +
+    draw_image(magick::image_read(here::here("manuscript","figures","figure2.png")), scale = 1)
+```
+
+\newpage
+## A computational account of PHS
+
+To test our hypotheses about the experience of PHS within our sample, we developed two multivariate models that jointly characterise the relationship between thermal contrast, PHS, response time, and confidence. Each model is based around two possible PHS profiles - true perceiver and unsure perceiver - that incorporate binary perceptual classifications ("cold" or "warm"), choice response time and confidence rating ([Fig. 3](#Figure3)). Both models quantify the relationship between PHS and thermal contrast as a logistic psychometric function, where the probability of PHS is expected to increase monotonically with increasing thermal contrast (Eq. 2). Confidence ratings and response times are then modelled as functions of PHS probability, allowing us to test different patterns of association between these indices of perceptual uncertainty and the likelihood of experiencing PHS.
+
+The true perceiver model (model 1) assumes that perceptual uncertainty in PHS arises from the difficulty of making a categorical choice between “cold” and “warm”, rather than from the experience of PHS itself. This model predicts the highest uncertainty where the stimulus is at the perceptual boundary between cold and warm, and the highest certainty at the points at which the sensation is either clearly cold, or clearly warm. Uncertainty is reflected by the slowest response times and lowest confidence which occurs at thermal contrast values associated with 50% probability of experiencing a PHS. This pattern aligns with the concept of a “true” PHS responder as an individual who experiences a clear and definite warm sensation in response to a cold stimulus.
+
+The unsure perceiver model (model 2) assumes that perceptual uncertainty does not arise from the difficulty of making a categorical choice between “cold” and “warm”, but from the aberrant and unusual experience of PHS. Therefore, uncertainty increases with the probability of experiencing PHS itself, with slowest response times and lowest confidence ratings expected at the highest thermal contrast values. This profile is called the unsure perceiver as it reflects increased uncertainty at thermal contrast values where participants more frequently report PHS, reflected in slower response times and lower confidence ratings. 
+
+Our two multivariate models were conducted in Stan [@team_stan_nodate] using [pre-registered](https://osf.io/t5nmd) priors and sampling parameters (see Supplementary Materials). We found that the unsure perceiver model provided a significantly better out of sample fit than the true perceiver model with an expected log predictive density difference of `r round(loo_results[2,1],2)` $\pm$ `r round(loo_results[2,2],2)`, thus providing an improvement in model fit by `r round((loo_results[2,1] / loo_results[2,2]),2)` standard errors of the difference.
+
+<a id="Figure3"></a> 
+
+```{r figure3, fig.width = 4.5, fig.height = 7.2, warning = F, message = F, echo = F, fig.cap = "**A multivariate model of PHS, response time and confidence.** Left: Plate notation illustrating the generative structure of the hierarchical model for a single subject. The model jointly estimates perceptual outcomes (PHS reports, $P_{ts}$), response times ($RT_{ts}$), and confidence ratings ($C_{ts}$) as a function of thermal contrast ($TC_{ts}$) and subject-specific parameters. For clarity, nuisance parameters (e.g., residual variance) and hierarchical population structure are omitted from the diagram. Right: Simulated model outputs showing predicted effects of thermal contrast on PHS probability, response time and confidence under two model variants: true perceiver (green) and unsure perceiver (purple). The true perceiver model assumes that response time and confidence are linked to decision uncertainty (entropy), with maximum uncertainty at the perceptual boundary. The unsure perceiver model assumes that response time and confidence scale directly with the probability of experiencing PHS. These models provide alternative mechanistic accounts of how individuals resolve perceptual ambiguity in response to alternating thermosensory input."}
+ggdraw() +
+    draw_image(magick::image_read(here::here("manuscript","figures","Figure3.png")), scale = 1)
+```
+
+\newpage
+## Both thermal contrast and the probability of PHS increase in older adults
+
+We used our winning model, the unsure perceiver model (model 2), to test how ageing and thermal contrast influences the likelihood of PHS and the associated behavioural markers: response time and confidence. [Figure 4](#Figure4) presents data from four example participants. Data from all participants is presented in the Supplementary Materials (Figs. S2-S4).
+
+At the group-level, we found that the probability of experiencing PHS is higher in older adults ([Fig. 5](#Figure5)). For each additional year of age, the thermal contrast required to reach a 50% probability of PHS decreased by `r round(age_results$mean[3],2)`% ($\Delta\mu_{phs}$ = `r round(age_results$mean[3],2)`, 95% highest density interval [HDI] [`r round(age_results$hdi95_l[3],2)[[1]]`, `r round(age_results$hdi95_h[3],2)[[1]]`], Posterior probability (*P*) = `r rd(age_results$prop_above_0[3],2)`), indicating increased PHS sensitivity with age. As expected, older adults also showed slower response times ($\Delta\mu_{rt}$ = `r round(age_results$mean[2],2)`, 95% HDI [`r round(age_results$hdi95_l[2],2)[[1]]`, `r round(age_results$hdi95_h[2],2)[[1]]`], *P*  = `r round(age_results$prop_above_0[2],2)`). Additionally, increased probability of PHS was associated with slower response times ($\beta_{1rt}$ = `r round(slope_results$mean[3],2)`, [`r round(slope_results$hdi95_l[3],2)[[1]]`, `r round(slope_results$hdi95_h[3],2)[[1]]`] , *P* = `r round(slope_results$prop_above_0,2)[[3]]`).  Increasing age was associated with higher mean confidence ratings ($\Delta\mu_{conf}$ = `r round(age_results$mean[1],2)`, 95% HDI [`r round(age_results$hdi95_l[1],2)[[1]]`, `r round(age_results$hdi95_h[1],2)[[1]]`],  *P* = `r rd(age_results$prop_above_0[1],2)`). However, confidence ratings decreased as PHS probability increased ($\beta_{1conf}$ = `r round(slope_results$mean[4],2)`, 95% HDI [`r round(slope_results$hdi95_l[4],2)[[1]]`, `r round(slope_results$hdi95_h[4],2)[[1]]`], *P* = `r round(slope_results$prop_above_0,2)[[1]]`). 
+
+To better quantify the magnitude of the effects of thermal contrast and probability of PHS on response time and confidence ratings, we computed conditional mean differences. When the probability of PHS was fixed to be 0, the mean difference in response time between minimum (0) and maximum (1) thermal contrast was `r round(marginal_difference$mean[1],2)` s (95% HDI [`r round(marginal_difference$q5[1],2)`, `r round(marginal_difference$q95[1],2)`]), indicating that higher contrast leads to faster responses. The corresponding mean change in confidence was `r round(marginal_difference$mean[2],2)*100` points (95% HDI [`r round(marginal_difference$q5[2],2)*100`, `r round(marginal_difference$q95[2],2)*100`]), indicating a substantial decrease in confidence with thermal contrast. Conversely, when thermal contrast was held constant at 0, increasing the probability of PHS from its minimum to maximum was associated with a mean increase in response time of `r round(marginal_difference$mean[3],2)` s (95% HDI [`r round(marginal_difference$q5[3],2)`, `r round(marginal_difference$q95[3],2)`]), indicating slower responses as PHS probability increased. Confidence ratings simultaneously decreased by `r round(marginal_difference$mean[4],2)*100` points (95% HDI [`r round(marginal_difference$q5[4],2)*100`, `r round(marginal_difference$q95[4],2)*100`]), highlighting lower confidence as PHS probability increased.
+
+
+
+<a id="Figure4"></a> 
+
+```{r figure4, fig.width = 7.2, fig.height = 7.2, warning = F, message = F, echo = F, fig.cap = "**The modelled change in PHS probability, response time and confidence rating as a function of thermal contrast for four example participants (P1 - P4).**  Each column shows data from a single participant, ordered from youngest to oldest. Rows represent posterior estimates for the probability of reporting PHS, log-transformed response time, and confidence ratings as a function of thermal contrast. Points indicate trial-wise data; thick lines show posterior means from our multivariate model; shaded areas represent 90%, 80% and 60% credible intervals (from light to dark). These examples illustrate individual variability in PHS perception and uncertainty across age."}
+ggdraw() +
+    draw_image(magick::image_read(here::here("manuscript","figures","figure4.png")), scale = 1)
+```
+
+<a id="Figure5"></a> 
+
+```{r figure5, fig.width = 7.2, fig.height = 7.2, warning = F, message = F, echo = F, fig.cap = "**Group-level estimates for the winning model (unsure perceiver) and age-related changes in perceptual response. ** (A) Posterior predictions from the best-fitting model (unsure perceiver) showing group-level estimates for the effect of thermal contrast on probability of PHS, response time and confidence ratings. Curves are plotted for ages 20 and 80, corresponding to the lower and upper bounds of the sample age range. Solid lines indicate posterior means, shaded regions show 90, 80 and 60% credible intervals. (B) Individual-level estimates of PHS threshold, mean response time and mean confidence ratings plotted by age. Points represent posterior means per participant and error bars indicate the 68% credible interval. (C) Posterior distributions of the estimated effect of age on each parameter, quantifying the average change per year (displayed as a percentage change for PHS threshold). Distributions reflect both the magnitude and direction of age-related shifts for PHS probability, response time and confidence."}
+ggdraw() +
+    draw_image(magick::image_read(here::here("manuscript","figures","figure5.png")), scale = 1)
+```
+
+\newpage
+## Individual differences in the experience of PHS
+Our modelling approach allowed us to examine individual variability in the experience of PHS. We expected that some participants would conform to the "true perceiver" profile, characterised by consistent and confident PHS reports, whereas others would be aligned with the "unsure perceiver" profile. 
+To quantify individual model preference, we fit non-hierarchical models to each participant and compared ELPD values for the two profiles at the individual level. We defined the ELPD difference such that negative values indicated a preference for the true perceiver model, and positive values for the unsure perceiver model. Although the unsure perceiver model provided the best fit at the group level, model comparison at the individual level revealed substantial heterogeneity in PHS response patterns ([Fig. 6A](#Figure6)). Some participants demonstrated responses consistent with the true perceiver, where uncertainty was maximal around the PHS threshold, whereas others showed increasing uncertainty as PHS probability increased, reflecting distinct perceptual profiles within the sample.
+We further examined whether model preference varied with age, and found no significant correlation between age and model preference ($\rho =$ `r rd(correlation_indi$mean,2)`, 95% CI [`r rd(correlation_indi$q5,2)`, `r rd(correlation_indi$q95,2)`], *p* = `r rd(correlation_indi$prop_above_0,2)`) ([Fig. 6B](#Figure6)).
+
+### Non-responders
+
+A subset of participants (11 out of 75) were identified as PHS non-responders. By definition, these participants reported no PHS, resulting in an almost flat psychometric function with near zero probability of PHS. Although they consistently reported all temperature changes as cold, it is possible that their experience included ambiguous sensations, neither cold nor warm, constrained by the forced-choice paradigm. To assess whether the highest contrast trials elicited a latent, unreported PHS experience, we examined whether thermal contrast influenced their response times and confidence ratings. If a subthreshold increase in PHS was present, it could manifest as systematic changes in these behavioural measures, despite the probability of PHS being fixed at zero. Specifically, this would be reflected in either a stronger-than-expected effect of thermal contrast on response times relative to responders or a corresponding decrease in confidence.
+	At the group-level, we observed faster response times and lower confidence with increasing thermal contrast ([Fig. 5A](#Figure5)). At the subject-level, posterior estimates confirmed this same pattern in response times for both responders and non-responders ([Fig. 6C](#Figure6)), while confidence remained largely unaffected. This indicates that, although response times were sensitive to thermal contrast, there was no evidence that higher contrast reduced uncertainty for non-responders. 
+
+<a id="Figure6"></a> 
+
+```{r figure6, fig.width = 7.2, fig.height = 7.2, warning = F, message = F, echo = F, fig.cap = "**Individual perceptual profiles of PHS.** (A) ELPD difference values from approximate leave-one-out cross validation non-hierarchical model comparison for each participant. Negative values indicate a better fit for model 1 (true perceiver profile), whilst positive values favour model 2 (unsure perceiver profile). Values are sorted by model fit (A) or by participant age (B). (C) Parameter estimates for PHS threshold, the slope of response time and confidence by thermal contrast, ordered by each participant’s total number of PHS reports. Non-responders are indicated in blue. Across all panels, error bars show 95% confidence intervals, and density plots show the distribution, mean and standard error of mean estimates for PHS responders (red) and non-responders (blue). For visualisation purposes, an outlier was removed from the far confidence rating display in (C) where estimated confidence slope was 1.1, the inclusion of which compressed the scale limiting visibility for the rest of the sample. Fig. S5 shows the same figure with the inclusion of this participant."}
+ggdraw() +
+    draw_image(magick::image_read(here::here("manuscript","figures","figure6.png")), scale = 1)
+```
+
+
+
+
+
+
+
+

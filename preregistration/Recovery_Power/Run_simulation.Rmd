@@ -1,0 +1,162 @@
+---
+title: "phs-hierarchical"
+author: "A.G. Mitchell"
+date: "2024-10-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(bayesplot, brms, cmdstanr, extraDistr, furrr, ggplot2, pracma, tidyverse)
+
+# adding functions to path
+
+sapply(list.files(here::here("analysis","functions"), full.names = T), source)
+
+source(here::here("preregistration","Recovery_Power", 'power_parameter_scripts.R'))
+```
+
+# setup for simulations
+
+```{r}
+# number of total simulations across the two models:
+n_sim = 20
+
+# correlated slope and threshold for phs
+
+age_int_coeff = rnorm(n_sim,0.1,0.05)
+
+age_slopes_coeff = rnorm(n_sim,-0.05,0.025)
+
+age_rt_coeff = rnorm(n_sim,0.15,0.075) #response time increases with age
+age_conf_coeff = rnorm(n_sim,-0.1,0.05) #confidence decreases with age
+
+
+mu_int_phs = rnorm(n_sim,4.1,0.25) 
+tau_int_phs = abs(rnorm(n_sim, 0.3,0.1))
+
+
+mu_slope_phs = rnorm(n_sim,-1.5,0.5)
+
+mu_int_rt = rnorm(n_sim, -1, 0.2)
+mu_int_conf = rnorm(n_sim, 0.9, 0.2)
+
+mu_slopes_rt = rnorm(n_sim,1,0.25)
+mu_slopes_conf = rnorm(n_sim,-2,0.5)
+
+mu_sigma_rt = rnorm(n_sim,-1,0.25)
+mu_prec_conf = log(rnorm(n_sim,20,2))
+
+mu_int_g = rnorm(n_sim, -5,1)
+mu_int_l = rnorm(n_sim, 0,0.25)
+
+mu_cut0 = rnorm(n_sim, -4,0.25)
+mu_cut1 = rnorm(n_sim, 2,0.25)
+
+mu_slopes1_rt = rnorm(n_sim,0,0.005)
+mu_slopes1_conf = rnorm(n_sim,0,0.005)
+
+
+tau_slopes1_rt = abs(rnorm(n_sim,0,0.005))
+tau_slopes1_conf = abs(rnorm(n_sim,0,0.005))
+
+tau_int_rt = abs(rnorm(n_sim, 0.2, 0.2))
+
+tau_int_conf = abs(rnorm(n_sim, 0.2, 0.2))
+
+tau_slopes_rt = abs(rnorm(n_sim,0.25,0.25))
+tau_slopes_conf = abs(rnorm(n_sim,0.5,0.5))
+
+tau_sigma_rt = abs(rnorm(n_sim,0.5,0.5))
+tau_prec_conf = abs(rnorm(n_sim,0.5,0.5))
+
+tau_int_g = abs(rnorm(n_sim, 0.5,0.5))
+tau_int_l = abs(rnorm(n_sim, 0.25,0.25))
+
+tau_cut0 = abs(rnorm(n_sim, 0.25,0.25))
+tau_cut1 = abs(rnorm(n_sim, 0.25,0.25))
+
+tau_slope_phs = abs(rnorm(n_sim, 1,0.2))
+
+mu_ndt_rt = rnorm(n_sim,-2,1)
+tau_ndt_rt = abs(rnorm(n_sim,0.1,1))
+
+
+simulated_model = c(rep("model1",n_sim/2),rep("model2",n_sim/2))
+
+
+parameters <- data.frame(
+  mu_int_phs = mu_int_phs,
+  mu_slope_phs = mu_slope_phs,
+  mu_int_g = mu_int_g,
+  mu_int_l = mu_int_l,
+  
+  mu_int_rt = mu_int_rt,
+  mu_slopes_rt = mu_slopes_rt,
+  mu_slopes1_rt = mu_slopes1_rt,
+  mu_sigma_rt = mu_sigma_rt,
+  mu_ndt_rt = mu_ndt_rt,
+  mu_int_conf = mu_int_conf,
+  
+  
+  mu_slopes_conf = mu_slopes_conf, # Adjusting size
+  mu_slopes1_conf = mu_slopes1_conf,
+  mu_prec_conf = mu_prec_conf,
+  mu_cut0 = mu_cut0,
+  mu_cut1 = mu_cut1,
+  
+
+  
+  tau_slopes1_rt = tau_slopes1_rt,
+  tau_slopes1_conf = tau_slopes1_conf,
+  tau_int_phs = tau_int_phs,
+  tau_slope_phs = tau_slope_phs,
+  tau_int_l = tau_int_l,
+  tau_int_g = tau_int_g,
+
+  tau_int_rt = tau_int_rt,
+  tau_slopes_rt = tau_slopes_rt,
+  tau_sigma_rt = tau_sigma_rt,
+  tau_int_conf = tau_int_conf,
+  tau_slopes_conf = tau_slopes_conf,
+  tau_prec_conf = tau_prec_conf,
+  tau_cut0 = tau_cut0,
+  tau_cut1 = tau_cut1,
+  tau_ndt_rt = tau_ndt_rt,
+  
+  
+  age_int_coeff = age_int_coeff,
+  age_slopes_coeff = age_slopes_coeff,
+  age_rt_coeff = age_rt_coeff,
+  age_conf_coeff = age_conf_coeff,
+
+  
+  sim_n = 1:n_sim,
+  n_sub = 83,
+  simulated_model = simulated_model
+)
+```
+
+# run it in parallel
+```{r}
+# nested list for furrr
+
+data_list = split(parameters, seq(nrow(parameters)))
+
+#core to run by:
+cores = 10
+
+plan(multisession, workers = cores)
+
+possfit_model = possibly(.f = fit_pr, otherwise = "Error")
+
+# qq = possfit_model(data_list[[1]])
+
+results <- future_map(data_list, ~possfit_model(.x), .options = furrr_options(seed = TRUE), .progress = T)
+
+saveRDS(results,here::here("results_citron.rds"))
+
+print("saved it! ")
+```
+
+

@@ -1,0 +1,264 @@
+---
+title: "short_individual_dif report"
+author: "Jesper F. E."
+date: "2024-10-24"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Load packages and data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(bayesplot, brms, cmdstanr, extraDistr, furrr, ggpubr, ggplot2, pracma, 
+               RColorBrewer, tidyverse)
+
+filtDat <- read_csv(here::here("data","phs-ageing_compiled-filtered.csv")) %>% filter(catch == 0)
+```
+
+# compile both single subject stan models and fit subjects individually.
+```{r, include=FALSE,echo=FALSE, warning=F}
+
+# Compile models
+stanHmodel1 <- cmdstanr::cmdstan_model(here::here("analysis","stanmodels","single_sub","m1_ss.stan")) #initiate model
+stanHmodel2 <- cmdstanr::cmdstan_model(here::here("analysis","stanmodels","single_sub","m2_ss.stan")) #initiate model
+
+df = filtDat %>% mutate(id = as.numeric(as.factor(subject)))
+
+# Empty dataframe to keep results
+loos = data.frame()
+draws = data.frame()
+params = data.frame()
+
+# Loop through subjects
+for(i in unique(df$subject)){
+
+  print(i)
+
+  # Get data for this subjcet
+  
+  df1 = df %>% filter(subject == i) %>% drop_na()
+
+
+  # Fit his data (model 1)
+  fit_m1 = stanHmodel1$sample(data = list(N = nrow(df1),
+                                        tcf = df1$TC,
+                                        phs = df1$PHS,
+                                        rt = df1$tempRT,
+                                        # duration = df1$duration,
+                                        conf = df1$vasRating/100,
+                                        min_rt = min(df1$tempRT)),
+                          refresh = 1000,
+                          iter_warmup = 1000,
+                          iter_sampling = 1000,
+                          parallel_chains = 4,
+                          adapt_delta = 0.99,
+                          max_treedepth = 12,
+                          init = 0)
+
+  # Compute LOO_CV
+  
+  m1_loo = fit_m1$loo()
+
+  # Fit model 2
+  
+  fit_m2 = stanHmodel2$sample(data = list(N = nrow(df1),
+                                        tcf = df1$TC,
+                                        phs = df1$PHS,
+                                        rt = df1$tempRT,
+                                        conf = df1$vasRating/100,
+                                        min_rt = min(df1$tempRT)),
+                          refresh = 1000,
+                          iter_warmup = 1000,
+                          iter_sampling = 1000,
+                          parallel_chains = 4,
+                          adapt_delta = 0.99,
+                          max_treedepth = 12,
+                          init = 0)
+  
+  # Compute LOO_CV
+  m2_loo = fit_m2$loo()
+
+  
+  # Compare the two LOO_CV and extract usefull subject information
+  loo_q = data.frame(loo::loo_compare(list(m1 = m1_loo,m2 = m2_loo))) %>%
+              rownames_to_column()%>%
+                rename(model = rowname)%>% arrange(model) %>%
+                mutate(age = unique(df1$age), subject = unique(df1$subject))
+
+
+  # extract diagnositic from the model fitting
+  
+  diagnostics = data.frame(mean_div = c(max(fit_m1$diagnostic_summary()$num_divergent),
+                                        max(fit_m2$diagnostic_summary()$num_divergent)),
+                           mean_tree = c(max(fit_m1$diagnostic_summary()$num_max_treedepth),
+                                         max(fit_m2$diagnostic_summary()$num_max_treedepth)),
+                           pareto_k_over07 = c(sum(m1_loo$diagnostics$pareto_k > 0.7),
+                                               sum(m2_loo$diagnostics$pareto_k > 0.7)),
+                           model = c("m1","m2"),
+                           id = i) %>%
+    mutate(age = unique(df1$age), subject = unique(df1$subject))
+
+  
+  # Combine model comparison with diagnostics
+  loo = inner_join(loo_q,diagnostics)
+
+  # save in the empthy initalized dataframe
+  loos = rbind(loos,loo)
+  
+  params_m1 = data.frame(fit_m1$summary(c("mus_phs","mus_rt","mus_conf"))) %>% 
+    mutate(model = "m1",age = unique(df1$age), subject = unique(df1$subject),id = i)
+  
+  params_m2 = data.frame(fit_m2$summary(c("mus_phs","mus_rt","mus_conf"))) %>% 
+    mutate(model = "m2",age = unique(df1$age), subject = unique(df1$subject),id = i)
+  
+  
+  params = rbind(params,rbind(params_m1,params_m2))
+  
+  params_m1 = as_draws_df(fit_m1$draws(c("a_phs","b1_rt","b1_conf"))) %>% 
+    mutate(model = "m1",age = unique(df1$age), subject = unique(df1$subject),id = i)
+  
+  params_m2 = as_draws_df(fit_m2$draws(c("a_phs","b1_rt","b1_conf"))) %>% 
+    mutate(model = "m2",age = unique(df1$age), subject = unique(df1$subject),id = i)
+  
+  draws = rbind(draws, rbind(params_m1,params_m2))
+  
+}
+
+
+# Save the big dataframe for plotting
+
+saveRDS(loos, here::here("analysis","objects","individual_loos.rds"))
+saveRDS(draws, here::here("analysis","objects","individual_draws.rds"))
+saveRDS(params, here::here("analysis","objects","individual_params.rds"))
+
+```
+
+# non responders analysis
+```{r, include=FALSE,echo=FALSE, warning=F}
+
+# Extract all non responers:
+ids = filtDat %>%
+  group_by(subject) %>%
+  summarize(PHS = sum(PHS)) %>%
+  filter(PHS == 0) %>%
+  .$subject
+
+# Empty dataframes for the subject level parametres for model 1 as well as the draws (for the group average):
+
+data_m1_nonresp = data.frame()
+all_draws = data.frame()
+
+# Lopp over the non-responders
+for(i in ids){
+
+  print(i)
+
+  
+  df1 = filtDat %>% filter(subject == i) %>% drop_na()
+
+  
+  #initialize model
+  stanHmodel1 <- cmdstanr::cmdstan_model(here::here("analysis","stanmodels","single_sub","m1_ss.stan")) #initiate model
+
+
+  #fit model
+  fit_m1 = stanHmodel1$sample(data = list(N = nrow(df1),
+                                        tcf = df1$TC,
+                                        phs = df1$PHS,
+                                        rt = df1$tempRT,
+                                        conf = df1$vasRating/100,
+                                        min_rt = min(df1$tempRT)),
+                          refresh = 1000,
+                          iter_warmup = 1000,
+                          iter_sampling = 1000,
+                          parallel_chains = 4,
+                          adapt_delta = 0.99,
+                          max_treedepth = 12,
+                          init = 0)
+
+  # Extract parameters
+  
+  tmp1 = data.frame(fit_m1$summary(c("b1_conf","b1_rt"))) %>%
+    mutate(id = i,
+           max_div = max(fit_m1$diagnostic_summary()$num_divergent),
+           max_tree = max(fit_m1$diagnostic_summary()$num_max_treedepth))
+
+  # Save summary of parameters in the dataframe
+  data_m1_nonresp = rbind(data_m1_nonresp,tmp1)
+  
+  
+  # Extract draws of the parameters
+  draws = as_draws_df(fit_m1$draws(c("b1_conf","b1_rt"))) %>% select(-contains(".")) %>% 
+    mutate(id = i,
+           max_div = max(fit_m1$diagnostic_summary()$num_divergent),
+           max_tree = max(fit_m1$diagnostic_summary()$num_max_treedepth))
+  
+  # Save the draws
+  all_draws = rbind(all_draws,draws)
+}
+
+```
+
+
+# Same thing as for model 1 but now for model 2 (without draws as the parameters are identical (just wanted to do this for a sanity check))
+```{r, include=FALSE,echo=FALSE, warning=F}
+
+# Get non-responsers
+ids = filtDat %>%
+  group_by(subject) %>%
+  summarize(PHS = sum(PHS)) %>%
+  filter(PHS == 0) %>%
+  .$subject
+
+# Dataframe for saving
+data_m2_nonresp = data.frame()
+
+# Loop through the non-responders
+
+for(i in ids){
+
+   print(i)
+
+  df1 = filtDat %>% filter(subject == i) %>% drop_na()
+
+  #initiate model
+  
+  stanHmodel2 <- cmdstanr::cmdstan_model(here::here("analysis","stanmodels","single_sub","m2_ss.stan")) #initiate model
+
+  # fir model
+  fit_m2 = stanHmodel2$sample(data = list(N = nrow(df1),
+                                        tcf = df1$TC,
+                                        phs = df1$PHS,
+                                        rt = df1$tempRT,
+                                        conf = df1$vasRating/100,
+                                        min_rt = min(df1$tempRT)),
+                          refresh = 1000,
+                          iter_warmup = 1000,
+                          iter_sampling = 1000,
+                          parallel_chains = 4,
+                          adapt_delta = 0.99,
+                          max_treedepth = 12,
+                          init = 0)
+
+  #savee paramters
+  tmp1 = data.frame(fit_m2$summary(c("b1_conf","b1_rt"))) %>%
+    mutate(id = i,
+           max_div = max(fit_m2$diagnostic_summary()$num_divergent),
+           max_tree = max(fit_m2$diagnostic_summary()$num_max_treedepth))
+
+  data_m2_nonresp = rbind(data_m2_nonresp,tmp1)
+}
+
+```
+
+
+# Save dataframes for plotting
+```{r}
+
+write.csv(data_m1_nonresp,here::here("analysis","objects","model1_nonresp.csv"))
+write.csv(data_m2_nonresp,here::here("analysis","objects","model2_nonresp.csv"))
+write.csv(all_draws,here::here("analysis","objects","model1_nonresp_draws.csv"))
+```
+

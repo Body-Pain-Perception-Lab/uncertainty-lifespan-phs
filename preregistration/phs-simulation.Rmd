@@ -1,0 +1,617 @@
+---
+title: "phs-hierarchical"
+author: "A.G. Mitchell"
+date: "2024-10-24"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(bayesplot, brms, cmdstanr, extraDistr, furrr, ggplot2, pracma, tidyverse)
+
+# adding functions to path
+sapply(list.files(here::here("analysis","functions"), full.names = T), source)
+```
+
+# Model entropy
+
+Simulate data for one of four different outcomes
+Outcome two: higher contrast generates increased PHS, highest response time and lowest confidence is for middle contrasts where temp more uncertain (not high enough to generate PHS)
+```{r}
+n_sub = 20
+n_trials = 64
+
+# correlated slope and threshold for phs
+mu_int_phs = 4 #log normal
+sd_int_phs = .4
+
+mu_slope_phs = -1.5
+sd_slope_phs = 1
+
+# correlation matrix
+rho = .5
+R = cor_mat(rho, sd_int_phs^2, sd_slope_phs^2)
+#means
+mu <- c(X = mu_int_phs, Y = mu_slope_phs)
+#random variables from the multivariate normal
+cor_data = data.frame(mvtnorm::rmvnorm(n_sub, mean = mu, sigma = R)) %>% 
+  mutate(intercept = X, slopes = Y)
+
+# parameters - start off with a normal distribution and move to a probabilistic later
+#intercepts:
+int_rt = rnorm(n_sub,0.2,.4)
+int_conf = rnorm(n_sub,.95,.15)
+#slopes:
+slopes_rt = rnorm(n_sub,1.5,1)
+slopes_conf = rnorm(n_sub,-2,.5)
+# slope by tcf
+slopes1_rt = rnorm(n_sub,0,0.005)
+slopes1_conf = rnorm(n_sub,0,0.005)
+#distribution
+sigma_rt = rnorm(n_sub,-1,0.15)
+prec_conf = rnorm(n_sub,25,5)
+# guess and lapse
+int_g = rnorm(n_sub,-5,1) #guess rate
+int_l = rnorm(n_sub,0,1) #lapse rate
+# cut points
+cut0 = rnorm(n_sub,-4,.25)
+cut1 = rnorm(n_sub,2,.25)
+# non-decision time
+int_ndt = rnorm(n_sub,0.2,0.2)
+
+#x values
+xs = seq(5,80,length.out = n_trials)
+# age coeff
+age_int_coeff = 0.1
+age_slopes_coeff = -0.05
+age_rt_coeff = 0.15 #response time increases with age
+age_conf_coeff = -0.1 #confidence decreases with age
+```
+
+# simulate data
+```{r}
+# simulate trialwise responses:
+df <- cor_data %>%  
+  mutate(int_phs = intercept, slopes_phs = slopes,
+         guess = inv_logit_scaled(int_g)/2, lapse = inv_logit_scaled(int_l)/2,
+         int_rt = int_rt, slopes_rt = slopes_rt, slopes1_rt = slopes1_rt, sigma_rt = sigma_rt, int_ndt = int_ndt,
+         int_conf = int_conf, slopes_conf = slopes_conf, slopes1_conf = slopes1_conf, prec_conf = prec_conf,
+         cut0 = cut0, cut1 = cut1) %>% 
+  mutate(id = 1:n_sub, x = list(xs),
+         age = round(seq(20,80,length.out = n_sub)),
+         z_age = scale(age)[,1]) %>% #adding age
+  mutate(int_phs_age = exp(int_phs+age_int_coeff*z_age),
+         slopes_phs_age = exp(slopes_phs+age_slopes_coeff*z_age),
+         int_rt_age = int_rt+age_rt_coeff*z_age,
+         int_conf_age = int_conf+age_conf_coeff*z_age) %>% 
+  unnest(x) %>% 
+  rowwise() %>% 
+  mutate(p = prob_func(x,int_phs_age,slopes_phs_age,guess,lapse),
+         rtP = int_rt_age+(slopes_rt*(entropy(p))+(slopes1_rt*x)),
+         cP = inv_logit_scaled(int_conf_age+(slopes_conf*(entropy(p))+(slopes1_conf*x))),
+         phs = rbinom(1,1,p),
+         rt = rlnorm(n(),rtP,exp(sigma_rt)),
+         conf = rordbeta(n(),(cP), prec_conf, cutpoints = c(cut0,cut1))
+  ) %>% 
+  # sort out rt
+  group_by(id) %>% 
+  mutate(min_rt = min(rt)) %>% 
+  ungroup(id) %>% 
+  mutate(rt = rt + (0.3+inv_logit_scaled(int_ndt)*(min_rt-0.3)),# add NDT
+         rt = ifelse(rt > 10, 10, rt)
+         )
+         
+min_rt <- df %>% aggregate(min_rt~id,mean)
+  
+#df
+
+# plot the individual subject distributions
+df %>% 
+  ggplot(aes(x = x, y = p, group = id, colour = as.factor(age))) +
+  geom_line()+
+  facet_wrap(~id)+
+  theme_bw()+
+  theme(legend.position = 'none')
+# plot rts
+df %>% 
+  ggplot(aes(x = x, y = rt))+
+  geom_point()+
+  facet_wrap(~id)+
+  theme_bw()
+# plot confidence
+df %>% 
+  ggplot(aes(x = x, y = conf))+
+  geom_point()+
+  facet_wrap(~id)+
+  theme_bw()
+```
+
+# hierarchical stan simulation
+# test out just the logistic for now
+```{r}
+
+stanHmodel2 <- cmdstanr::cmdstan_model(here::here("preregistration","stanmodels",'phs-hierarchical_m1.stan')) #initiate model
+fit2 = stanHmodel2$sample(data = list(N = nrow(df), 
+                                      tcf = df$x,
+                                      phs = df$phs,
+                                      rt = df$rt,
+                                      conf = df$conf,
+                                      S = length(unique(df$id)),
+                                      S_id = df$id,
+                                      age_z = unique(df$z_age),
+                                      min_rt = min_rt$min_rt),
+                        refresh = 200,
+                        iter_warmup = 1000,
+                        iter_sampling = 1000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.95,
+                        max_treedepth = 12,
+                        init = 0)
+
+# model checks
+fit2$diagnostic_summary()
+# getting outputs for inspection
+#fit2_summary <- fit2$summary(c('mu_a_phs','sigma_a_phs',
+    #                       'mu_b_phs','sigma_b_phs',
+    #                       'a_phs','b_phs'))
+#fit2_summary
+
+# trace plots (hairy caterpillars)
+mcmc_trace(fit2$draws(variables = c('mus_phs','sigmas_phs',
+                           'mus_rt','sigmas_rt',
+                           'mus_conf','sigmas_conf'))) #hairy caterpillars
+fit2$summary("mus_age")
+fit2$summary("mus_phs")
+fit2$summary("mus_rt")
+fit2$summary("mus_conf")
+```
+
+
+# now plotting group-level predicitions of the model
+```{r}
+group_draws = as_draws_df(fit2$draws(c("mus_phs","sigmas_phs",
+                                      "mus_rt","sigmas_rt",
+                                      "mus_conf","sigmas_conf")))
+
+#get 200 random ids for the draws we select to plot.
+draw_id = sample(1:4000,200)
+
+# make parameter data-frame
+params = group_draws %>% select(-contains(".")) %>% 
+  mutate(draw = 1:n()) %>% 
+  filter(draw %in% draw_id) %>% 
+  mutate(x = list(xs)) %>% 
+  unnest(x) %>% 
+  rowwise() %>% 
+  mutate(p = prob_func(x,exp(`mus_phs[1]`), exp(`mus_phs[2]`),
+                       inv_logit_scaled(`mus_phs[3]`)/2,inv_logit_scaled(`mus_phs[4]`)/2),
+         rtP = `mus_rt[1]`+`mus_rt[2]`*(entropy(p)) + `mus_rt[3]`* x + 0.3,
+         cP = `mus_conf[1]`+`mus_conf[2]`*(entropy(p))+ `mus_conf[3]`* x,
+         )
+```
+
+
+```{r}
+# plot group-level estmation against subject level
+# phs
+df %>% group_by(x) %>% 
+  summarize(mean = mean(phs), se = sd(phs)/sqrt(n())) %>% 
+  ggplot(aes(x = x, y = mean))+
+  # model data
+  geom_line(data = params, aes(x = x, y = p, group = draw), col = "grey70", alpha = 0.5)+
+  # simulated data
+  geom_smooth(col = 'black')+
+  #geom_pointrange(aes(ymin = mean-2*se, ymax = mean+2*se))+
+  theme_bw()
+# rt
+df %>% 
+  group_by(x) %>% 
+  summarize(mean = mean(rt), se = sd(rt)/sqrt(n())) %>% 
+  ggplot(aes(x = x, y = mean))+
+  # model data
+  geom_line(data = params, aes(x = x, y = exp(rtP), group = draw), col = "grey70", alpha = 0.5)+
+  # simulated data
+  geom_pointrange(aes(ymin = mean-se, ymax = mean+se), col = 'black')+
+  theme_bw()
+# conf
+df %>% group_by(x) %>% 
+  summarize(mean = mean((conf)), se = sd((conf))/sqrt(n())) %>% 
+  ggplot(aes(x = x, y = mean))+
+  # model data
+  geom_line(data = params, aes(x = x, y = inv_logit_scaled(cP), group = draw), 
+            col = "grey70", alpha = 0.5)+
+  # simulated data
+  geom_pointrange(aes(ymin = mean-se, ymax = mean+se), col = 'black')+
+  theme_bw()
+```
+
+# try and make it hierarchical
+# add this into the model above later - just running some test code for now
+
+# plot individual subject fits
+```{r}
+subject_draws = as_draws_df(fit2$draws(c("mus_phs","sigmas_phs","difs_phs",
+                                         "mus_rt","sigmas_rt","difs_rt",
+                                         "mus_conf","sigmas_conf","difs_conf"))) %>% 
+                select(-contains("."))
+
+#get 200 random ids for the draws we select to plot.
+draw_id = sample(1:4000,200)
+
+params = subject_draws %>% 
+  mutate(draw = 1:n()) %>% 
+  filter(draw %in% draw_id) %>% 
+  pivot_longer(
+    cols = starts_with("difs"),
+    names_to = c("outcome","parameters","id"),
+    names_pattern = "difs_([a-z]+)\\[(\\d+),(\\d+)\\]"
+  ) 
+
+# create dataframe for each outcome variable
+params_phs = params %>%   
+  filter(outcome == 'phs') %>% 
+  pivot_wider(names_from = "parameters", values_from = value) %>% 
+  rename("a" = "1", "b" = "2", "g" = "3", "l" = "4") %>% 
+  mutate(a_phs = exp(`mus_phs[1]` + a * `sigmas_phs[1]`),
+         b_phs = exp(`mus_phs[2]` + b * `sigmas_phs[2]`),
+         g_phs = inv_logit_scaled(`mus_phs[3]` + g * `sigmas_phs[3]`)/2,
+         l_phs = inv_logit_scaled(`mus_phs[4]` + l * `sigmas_phs[4]`)/2,) 
+
+params_rt = params %>% 
+  filter(outcome == 'rt') %>% 
+  pivot_wider(names_from = "parameters", values_from = value) %>% 
+  rename("a" = "1", "b" = "2", "o" = "3") %>% 
+  mutate(a_rt = `mus_rt[1]` + a * `sigmas_rt[1]`,
+         b_rt = `mus_rt[2]` + b * `sigmas_rt[2]`,
+         sigma_rt = exp(`mus_rt[3]` + o * `sigmas_rt[3]`))
+
+params_conf = params %>% 
+  filter(outcome == 'conf') %>% 
+  pivot_wider(names_from = "parameters", values_from = value) %>% 
+  rename("a" = "1", "b" = "2", "p" = "3", "c0" = "4", "c1" = "5") %>% 
+  mutate(a_conf = `mus_conf[1]` + a * `sigmas_conf[1]`,
+         b_conf = `mus_conf[2]` + b * `sigmas_conf[2]`,
+         prec_conf = `mus_conf[3]` + p * `sigmas_conf[3]`,
+         cut0 = `mus_conf[4]` + c0 * `sigmas_conf[4]`,
+         cut1 = `mus_conf[5]` + c1 * `sigmas_conf[5]`)
+
+params1 = merge(params_phs,params_rt,by=c('id','draw'))
+params1 = merge(params1,params_conf,by=c('id','draw'))
+
+params1 = params1 %>% 
+  mutate(x = list(seq(5,80,length.out = n_trials))) %>% 
+  unnest(x) %>% 
+  rowwise() %>% 
+  mutate(p = prob_func(x,a_phs,b_phs,g_phs,l_phs),
+         rtP = a_rt+b_rt*(entropy(p)),
+         cP = a_conf+b_conf*(entropy(p)))
+```
+
+#plotting subject draws
+```{r}
+# plotting individual subject data - phs
+df %>% mutate(draw = NA) %>% 
+  ggplot(aes(x = x, y = phs, group = interaction(id,draw)))+
+  geom_point(col = 'darkgreen', alpha = 0.5)+
+  geom_line(data = params1, aes(x = x, y = p), col = "grey40", alpha = 0.05)+
+  facet_wrap(~id)+
+  theme_bw()
+# plot rt
+df %>% mutate(draw = NA) %>% 
+  ggplot(aes(x = x, y = rt, group = interaction(id,draw)))+
+  geom_point(col = 'darkgreen', alpha = 0.5)+
+  geom_line(data = params1, aes(x = x, y = exp(rtP)), col = "grey20", alpha = 0.1)+
+  facet_wrap(~id)+
+  theme_bw()
+# plot conf
+df %>% mutate(draw = NA) %>% 
+  ggplot(aes(x = x, y = conf, group = interaction(id,draw)))+
+  geom_point(col = 'darkgreen', alpha = 0.5)+
+  geom_line(data = params1, aes(x = x, y = inv_logit_scaled(cP)), col = "grey20", alpha = 0.1)+
+  facet_wrap(~id)+
+  theme_bw()
+```
+
+
+# Model probability:
+
+
+Simulate data for one of four different outcomes
+Outcome two: higher contrast generates increased PHS, highest response time and lowest confidence is for middle contrasts where temp more uncertain (not high enough to generate PHS)
+```{r}
+n_sub = 20
+n_trials = 64
+
+# correlated slope and threshold for phs
+mu_int_phs = 4 #log normal
+sd_int_phs = .4
+
+mu_slope_phs = -1.5
+sd_slope_phs = 1
+
+# correlation matrix
+rho = .5
+R = cor_mat(rho, sd_int_phs^2, sd_slope_phs^2)
+#means
+mu <- c(X = mu_int_phs, Y = mu_slope_phs)
+#random variables from the multivariate normal
+cor_data = data.frame(mvtnorm::rmvnorm(n_sub, mean = mu, sigma = R)) %>% 
+  mutate(intercept = X, slopes = Y)
+
+# parameters - start off with a normal distribution and move to a probabilistic later
+#intercepts:
+int_rt = rnorm(n_sub,0.2,.4)
+int_conf = rnorm(n_sub,.95,.15)
+#slopes:
+slopes_rt = rnorm(n_sub,1.5,1)
+slopes_conf = rnorm(n_sub,-2,.5)
+# slope by tcf
+slopes1_rt = rnorm(n_sub,0,0.005)
+slopes1_conf = rnorm(n_sub,0,0.005)
+#distribution
+sigma_rt = rnorm(n_sub,-1,0.15)
+prec_conf = rnorm(n_sub,25,5)
+# guess and lapse
+int_g = rnorm(n_sub,-5,1) #guess rate
+int_l = rnorm(n_sub,0,1) #lapse rate
+# cut points
+cut0 = rnorm(n_sub,-4,.25)
+cut1 = rnorm(n_sub,2,.25)
+# non-decision time
+int_ndt = rnorm(n_sub,0.2,0.2)
+
+#x values
+xs = seq(5,80,length.out = n_trials)
+# age coeff
+age_int_coeff = 0.1
+age_slopes_coeff = -0.05
+age_rt_coeff = 0.15 #response time increases with age
+age_conf_coeff = -0.1 #confidence decreases with age
+```
+
+# simulate data
+```{r}
+# simulate trialwise responses:
+df <- cor_data %>%  
+  mutate(int_phs = intercept, slopes_phs = slopes,
+         guess = inv_logit_scaled(int_g)/2, lapse = inv_logit_scaled(int_l)/2,
+         int_rt = int_rt, slopes_rt = slopes_rt, slopes1_rt = slopes1_rt, sigma_rt = sigma_rt, int_ndt = int_ndt,
+         int_conf = int_conf, slopes_conf = slopes_conf, slopes1_conf = slopes1_conf, prec_conf = prec_conf,
+         cut0 = cut0, cut1 = cut1) %>% 
+  mutate(id = 1:n_sub, x = list(xs),
+         age = round(seq(20,80,length.out = n_sub)),
+         z_age = scale(age)[,1]) %>% #adding age
+  mutate(int_phs_age = exp(int_phs+age_int_coeff*z_age),
+         slopes_phs_age = exp(slopes_phs+age_slopes_coeff*z_age),
+         int_rt_age = int_rt+age_rt_coeff*z_age,
+         int_conf_age = int_conf+age_conf_coeff*z_age) %>% 
+  unnest(x) %>% 
+  rowwise() %>% 
+  mutate(p = prob_func(x,int_phs_age,slopes_phs_age,guess,lapse),
+         rtP = int_rt_age+(slopes_rt*((p))+(slopes1_rt*x)),
+         cP = inv_logit_scaled(int_conf_age+(slopes_conf*((p))+(slopes1_conf*x))),
+         phs = rbinom(1,1,p),
+         rt = rlnorm(n(),rtP,exp(sigma_rt)),
+         conf = rordbeta(n(),(cP), prec_conf, cutpoints = c(cut0,cut1))
+  ) %>% 
+  # sort out rt
+  group_by(id) %>% 
+  mutate(min_rt = min(rt)) %>% 
+  ungroup(id) %>% 
+  mutate(rt = rt + (0.3+inv_logit_scaled(int_ndt)*(min_rt-0.3)),# add NDT
+         rt = ifelse(rt > 10, 10, rt)
+         )
+         
+min_rt <- df %>% aggregate(min_rt~id,mean)
+  
+#df
+
+# plot the individual subject distributions
+df %>% 
+  ggplot(aes(x = x, y = p, group = id, colour = as.factor(age))) +
+  geom_line()+
+  facet_wrap(~id)+
+  theme_bw()+
+  theme(legend.position = 'none')
+# plot rts
+df %>% 
+  ggplot(aes(x = x, y = rt))+
+  geom_point()+
+  facet_wrap(~id)+
+  theme_bw()
+# plot confidence
+df %>% 
+  ggplot(aes(x = x, y = conf))+
+  geom_point()+
+  facet_wrap(~id)+
+  theme_bw()
+```
+
+# hierarchical stan simulation
+# test out just the logistic for now
+```{r}
+
+stanHmodel2 <- cmdstanr::cmdstan_model(here::here("preregistration","stanmodels",'phs-hierarchical_m2.stan')) #initiate model
+fit2 = stanHmodel2$sample(data = list(N = nrow(df), 
+                                      tcf = df$x,
+                                      phs = df$phs,
+                                      rt = df$rt,
+                                      conf = df$conf,
+                                      S = length(unique(df$id)),
+                                      S_id = df$id,
+                                      age_z = unique(df$z_age),
+                                      min_rt = min_rt$min_rt),
+                        refresh = 200,
+                        iter_warmup = 1000,
+                        iter_sampling = 1000,
+                        parallel_chains = 4,
+                        adapt_delta = 0.95,
+                        max_treedepth = 12,
+                        init = 0)
+
+# model checks
+fit2$diagnostic_summary()
+# getting outputs for inspection
+#fit2_summary <- fit2$summary(c('mu_a_phs','sigma_a_phs',
+    #                       'mu_b_phs','sigma_b_phs',
+    #                       'a_phs','b_phs'))
+#fit2_summary
+
+# trace plots (hairy caterpillars)
+mcmc_trace(fit2$draws(variables = c('mus_phs','sigmas_phs',
+                           'mus_rt','sigmas_rt',
+                           'mus_conf','sigmas_conf'))) #hairy caterpillars
+fit2$summary("mus_age")
+fit2$summary("mus_phs")
+fit2$summary("mus_rt")
+fit2$summary("mus_conf")
+```
+
+
+# now plotting group-level predicitions of the model
+```{r}
+group_draws = as_draws_df(fit2$draws(c("mus_phs","sigmas_phs",
+                                      "mus_rt","sigmas_rt",
+                                      "mus_conf","sigmas_conf")))
+
+#get 200 random ids for the draws we select to plot.
+draw_id = sample(1:4000,200)
+
+# make parameter data-frame
+params = group_draws %>% select(-contains(".")) %>% 
+  mutate(draw = 1:n()) %>% 
+  filter(draw %in% draw_id) %>% 
+  mutate(x = list(xs)) %>% 
+  unnest(x) %>% 
+  rowwise() %>% 
+  mutate(p = prob_func(x,exp(`mus_phs[1]`), exp(`mus_phs[2]`),
+                       inv_logit_scaled(`mus_phs[3]`)/2,inv_logit_scaled(`mus_phs[4]`)/2),
+         rtP = `mus_rt[1]`+`mus_rt[2]`*((p)) + `mus_rt[3]`* x + 0.3,
+         cP = `mus_conf[1]`+`mus_conf[2]`*((p))+ `mus_conf[3]`* x,
+         )
+```
+
+
+```{r}
+# plot group-level estmation against subject level
+# phs
+df %>% group_by(x) %>% 
+  summarize(mean = mean(phs), se = sd(phs)/sqrt(n())) %>% 
+  ggplot(aes(x = x, y = mean))+
+  # model data
+  geom_line(data = params, aes(x = x, y = p, group = draw), col = "grey70", alpha = 0.5)+
+  # simulated data
+  geom_smooth(col = 'black')+
+  #geom_pointrange(aes(ymin = mean-2*se, ymax = mean+2*se))+
+  theme_bw()
+# rt
+df %>% 
+  group_by(x) %>% 
+  summarize(mean = mean(rt), se = sd(rt)/sqrt(n())) %>% 
+  ggplot(aes(x = x, y = mean))+
+  # model data
+  geom_line(data = params, aes(x = x, y = exp(rtP), group = draw), col = "grey70", alpha = 0.5)+
+  # simulated data
+  geom_pointrange(aes(ymin = mean-se, ymax = mean+se), col = 'black')+
+  theme_bw()
+# conf
+df %>% group_by(x) %>% 
+  summarize(mean = mean((conf)), se = sd((conf))/sqrt(n())) %>% 
+  ggplot(aes(x = x, y = mean))+
+  # model data
+  geom_line(data = params, aes(x = x, y = inv_logit_scaled(cP), group = draw), 
+            col = "grey70", alpha = 0.5)+
+  # simulated data
+  geom_pointrange(aes(ymin = mean-se, ymax = mean+se), col = 'black')+
+  theme_bw()
+```
+
+# try and make it hierarchical
+# add this into the model above later - just running some test code for now
+
+# plot individual subject fits
+```{r}
+subject_draws = as_draws_df(fit2$draws(c("mus_phs","sigmas_phs","difs_phs",
+                                         "mus_rt","sigmas_rt","difs_rt",
+                                         "mus_conf","sigmas_conf","difs_conf"))) %>% 
+                select(-contains("."))
+
+#get 200 random ids for the draws we select to plot.
+draw_id = sample(1:4000,200)
+
+params = subject_draws %>% 
+  mutate(draw = 1:n()) %>% 
+  filter(draw %in% draw_id) %>% 
+  pivot_longer(
+    cols = starts_with("difs"),
+    names_to = c("outcome","parameters","id"),
+    names_pattern = "difs_([a-z]+)\\[(\\d+),(\\d+)\\]"
+  ) 
+
+# create dataframe for each outcome variable
+params_phs = params %>%   
+  filter(outcome == 'phs') %>% 
+  pivot_wider(names_from = "parameters", values_from = value) %>% 
+  rename("a" = "1", "b" = "2", "g" = "3", "l" = "4") %>% 
+  mutate(a_phs = exp(`mus_phs[1]` + a * `sigmas_phs[1]`),
+         b_phs = exp(`mus_phs[2]` + b * `sigmas_phs[2]`),
+         g_phs = inv_logit_scaled(`mus_phs[3]` + g * `sigmas_phs[3]`)/2,
+         l_phs = inv_logit_scaled(`mus_phs[4]` + l * `sigmas_phs[4]`)/2,) 
+
+params_rt = params %>% 
+  filter(outcome == 'rt') %>% 
+  pivot_wider(names_from = "parameters", values_from = value) %>% 
+  rename("a" = "1", "b" = "2", "o" = "3") %>% 
+  mutate(a_rt = `mus_rt[1]` + a * `sigmas_rt[1]`,
+         b_rt = `mus_rt[2]` + b * `sigmas_rt[2]`,
+         sigma_rt = exp(`mus_rt[3]` + o * `sigmas_rt[3]`))
+
+params_conf = params %>% 
+  filter(outcome == 'conf') %>% 
+  pivot_wider(names_from = "parameters", values_from = value) %>% 
+  rename("a" = "1", "b" = "2", "p" = "3", "c0" = "4", "c1" = "5") %>% 
+  mutate(a_conf = `mus_conf[1]` + a * `sigmas_conf[1]`,
+         b_conf = `mus_conf[2]` + b * `sigmas_conf[2]`,
+         prec_conf = `mus_conf[3]` + p * `sigmas_conf[3]`,
+         cut0 = `mus_conf[4]` + c0 * `sigmas_conf[4]`,
+         cut1 = `mus_conf[5]` + c1 * `sigmas_conf[5]`)
+
+params1 = merge(params_phs,params_rt,by=c('id','draw'))
+params1 = merge(params1,params_conf,by=c('id','draw'))
+
+params1 = params1 %>% 
+  mutate(x = list(seq(5,80,length.out = n_trials))) %>% 
+  unnest(x) %>% 
+  rowwise() %>% 
+  mutate(p = prob_func(x,a_phs,b_phs,g_phs,l_phs),
+         rtP = a_rt+b_rt*(entropy(p)),
+         cP = a_conf+b_conf*(entropy(p)))
+```
+
+#plotting subject draws
+```{r}
+# plotting individual subject data - phs
+df %>% mutate(draw = NA) %>% 
+  ggplot(aes(x = x, y = phs, group = interaction(id,draw)))+
+  geom_point(col = 'darkgreen', alpha = 0.5)+
+  geom_line(data = params1, aes(x = x, y = p), col = "grey40", alpha = 0.05)+
+  facet_wrap(~id)+
+  theme_bw()
+# plot rt
+df %>% mutate(draw = NA) %>% 
+  ggplot(aes(x = x, y = rt, group = interaction(id,draw)))+
+  geom_point(col = 'darkgreen', alpha = 0.5)+
+  geom_line(data = params1, aes(x = x, y = exp(rtP)), col = "grey20", alpha = 0.1)+
+  facet_wrap(~id)+
+  theme_bw()
+# plot conf
+df %>% mutate(draw = NA) %>% 
+  ggplot(aes(x = x, y = conf, group = interaction(id,draw)))+
+  geom_point(col = 'darkgreen', alpha = 0.5)+
+  geom_line(data = params1, aes(x = x, y = inv_logit_scaled(cP)), col = "grey20", alpha = 0.1)+
+  facet_wrap(~id)+
+  theme_bw()
+```
+
+
+

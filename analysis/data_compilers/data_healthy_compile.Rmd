@@ -1,0 +1,115 @@
+---
+title: "PHS ageing study"
+author: "Alexandra G. Mitchell, Jesper F. Ehmsen, Camilla E. Krænge & Francesca Fardo"
+date: "11/07/2024"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(ggplot2, reshape2, tidyverse)
+```
+
+# Define key variables
+```{r}
+# where the data is
+projPath = '/mnt/slow_scratch/ageing-and-neuropathy'
+datPath <- file.path(projPath, 'data')
+
+session = 'ses-01'
+
+# where the analysis is
+gitPath = '/home/alexm/Git/phs-ageing'
+anaPath = file.path(gitPath, 'analysis')
+```
+
+# find and load all .tsv results files
+```{r}
+# identify subject folders - only healthy controls (1-4)
+subs = dir(datPath, pattern = 'sub-([1-4])')
+
+# loop through and extract relevant data
+c1 = 0
+for (s in subs) {
+  c1 = c1 + 1 #counter
+  
+  sPath = file.path(datPath, s, session, 'beh', 'phs_con')
+  datFiles = list.files(sPath, pattern = 'phs_con_beh_results')
+  
+  # only compile if the file exists
+  if(file.exists(file.path(sPath, datFiles[1]))){
+    dat = read.delim(file.path(sPath, datFiles[1]), sep = '\t')
+  
+    # make large data-frame
+    if (c1 == 1){
+      allDat = dat
+    } else {
+      allDat = rbind(allDat, dat)
+    }
+  }
+  
+}
+```
+
+```{r}
+# find and replace the badly entered ID (1++9)
+allDat <- allDat %>% 
+  mutate(subject = str_replace(subject, fixed("sub-1++9"), "sub-1009"))
+
+# load demographics and merge age
+demoFile <- list.files(projPath, '\\.csv$')
+demo <- read.delim(file.path(projPath, demoFile[2]), sep=',')
+# create subject column to merge data-frames
+demo <- demo %>%
+  group_by(ID) %>%
+  mutate(subject = paste0("sub-", ID)) %>%
+  ungroup()
+# merge
+allDat1 <- allDat %>% 
+  left_join(demo, by = 'subject') %>%
+  filter(include_phs == 1) %>% 
+  mutate(group = substr(subject, 5, 5)) %>% #make sure no patients in data set
+  filter(group < 5) %>% 
+  select(-c('ID'))
+
+# finally, save compiled data-frame
+write.csv(allDat1, file.path(gitPath, 'data', 'phs-ageing_compiled-data.csv'), row.names = FALSE)
+```
+
+#healthy control age figure
+```{r}
+ggplot(data = demo_cont, aes(colour = as.factor(gender))) +
+  geom_point(aes(x = age, y = count), size = 2.5, alpha = .75) +
+  scale_x_continuous(breaks = seq(20, 80, by = 5), limits = c(20,80)) +
+  scale_colour_manual(values = c('skyblue2','orchid')) +
+  labs(x = 'Age (years)', y = 'Subject') +
+  theme_classic() +
+  theme(legend.position = 'right',
+        legend.title = element_blank(),
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 11)) -> age_plot
+
+ggsave('age_figure.png', age_plot, device = NULL, anaPath, scale = 1, 
+       width = 7, height = 4, dpi = 600)
+age_plot
+```
+
+#neuropathy age figure
+```{r}
+ggplot(data = demo_poly, aes(colour = as.factor(gender))) +
+  geom_point(aes(x = age, y = count), size = 2, alpha = .7) +
+  #scale_y_continuous(breaks = c(20:80, 5)) +
+  scale_x_continuous(breaks = seq(20, 80, by = 5), limits = c(20,80)) +
+  labs(x = 'age (years)', y = 'subject') +
+  theme_bw() +
+  theme(legend.position = 'none') -> age_plot
+
+ggsave('age_figure2.png', age_plot, device = NULL, datPath, scale = 1, 
+       width = 6, height = 4, dpi = 600)
+
+```
+
+

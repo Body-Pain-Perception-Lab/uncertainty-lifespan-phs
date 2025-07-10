@@ -1,0 +1,456 @@
+---
+title: "Supplementary2"
+author: "J.F. Ehmsen"
+date: "2025-05-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+---
+title: "short_individual_dif report"
+author: "Jesper F. E."
+date: "2024-10-24"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+# Load packages and data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+pacman::p_load(bayesplot, brms, cmdstanr, extraDistr, furrr, ggpubr, ggplot2, pracma, 
+               RColorBrewer, tidyverse,ggridges, patchwork,metR)
+
+
+df <- read_csv(here::here("data","phs-ageing_compiled-filtered.csv")) %>%  filter(catch == 0)
+
+data_m1_nonresp = read.csv(here::here("analysis","objects","model2_nonresp.csv"))
+data_m2_nonresp = read.csv(here::here("analysis","objects","model2_nonresp.csv"))
+
+loos = readRDS(here::here("analysis","objects","individual_loos.rds"))
+
+individual_params <- readRDS(here::here("analysis","objects", "individual_params.rds"))
+individual_draws <- readRDS(here::here("analysis","objects", "individual_draws.rds"))
+
+# palettes
+pal_pg <- brewer.pal(11, 'PRGn')
+pal_gr <- brewer.pal(9, 'Greens')
+pal_pu <- brewer.pal(9, 'BuPu')
+pal_or <- brewer.pal(8, 'OrRd')
+pal_rd <- brewer.pal(8, 'Reds')
+pal_bl <- brewer.pal(8, 'Blues')
+```
+
+```{r}
+
+ageDat <- df %>% 
+  group_by(subject) %>% 
+  summarise(PHS_all = sum(PHS))
+
+ll1 = loos %>% 
+  mutate(elpd_diff = ifelse(model == "m1", -elpd_diff, elpd_diff)) %>% 
+  filter(elpd_diff != 0)
+
+id_arrange = ll1 %>% arrange(elpd_diff) %>% .$id
+ll1$id <- factor(ll1$id, levels = id_arrange)
+```
+
+# negative values means that model 2 lost.
+
+```{r}
+plot_model1 = inner_join(ll1,ageDat) %>% 
+  mutate(responder = as.factor(ifelse(PHS_all == 0, 1,0))) %>% 
+  filter(mean_div == 0) %>%
+  ggplot(aes(y = id, 
+             x = elpd_diff, 
+             xmin = elpd_diff-2*se_diff, 
+             color = responder,
+             fill = responder,
+             xmax = elpd_diff+2*se_diff))+
+  geom_pointrange(shape = 20, 
+                  alpha = .7, 
+                  # colour = pal_pu[8], 
+                  # fill = pal_pu[8],
+                  size = 0.5, linewidth = .7, show.legend = F)+
+  scale_y_discrete(name = 'Participant')+
+  scale_x_continuous(limits = c(-12,12), breaks = c(-10,0,10)) +
+  labs(title = 'Winning model by participant') +
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 1, colour = 'black')+
+  scale_color_manual(values = c(pal_rd[7],pal_bl[7]))+
+  theme_classic()+
+  theme(axis.text.y = element_blank(),
+        axis.text.x = element_text(size = 12),
+        axis.title.y = element_text(size = 13),
+        axis.title.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        #plot.margin = margin(b = 1.5, unit = "cm"),
+        #plot.margin = margin(b = 1, unit = "cm") #not needed when combined
+        panel.border = element_rect(fill = NA, linewidth = 0.8)
+        ) +
+  #annotate("text", x = -6, y = -12, label = "Favours model 1", size = 4.5) +
+  #annotate("text", x = 6, y = -12, label = "Favours model 2",  size = 4.5) +
+  #geom_segment(x = -0.5, xend = -12, y = -8, yend=  -8, arrow = arrow(length = unit(4, "pt")))+
+  #geom_segment(x = 0.5, xend = 12, y = -8, yend=  -8, arrow = arrow(length = unit(4, "pt")))+
+  coord_cartesian(ylim = c(0, 75), clip = "off")
+
+plot_model1
+```
+
+
+# Plot the correlation with age and model preference
+
+```{r,echo=FALSE,warning=F}
+
+
+
+plot_cor = inner_join(ll1,ageDat) %>% 
+  mutate(responder = as.factor(ifelse(PHS_all == 0, 1,0))) %>% 
+  filter(mean_div == 0) %>%
+  ggplot(aes(y = (age-20), 
+             x = elpd_diff, 
+             xmin = elpd_diff-2*se_diff, 
+             xmax = elpd_diff+2*se_diff,
+             color = responder,
+             fill = responder,
+             group = age))+
+  geom_pointrange(shape = 20, 
+                  alpha = .7, 
+                  # colour = pal_pu[8], 
+                  # fill = pal_pu[8],
+                  size = 0.5, linewidth = .7,
+                  position = position_jitter(width = 0, height = .4, seed = 123),show.legend = F)+
+  scale_y_continuous(name = 'Participant age',
+                     breaks = c(0,20,40,60), labels = c('20','40','60','80')) +
+  scale_x_continuous("ELPD difference",limits = c(-12,12), breaks = c(-10,0,10)) +
+  labs(title = 'Winning model by age') +
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 1, colour = 'black')+
+  theme_classic()+
+  theme(axis.text.y = element_text(size = 12),
+        axis.text.x = element_text(size = 12),
+        axis.title = element_text(size = 13),
+        # axis.title.x = element_blank(),
+        axis.ticks.y = element_blank(),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        panel.border = element_rect(fill = NA, linewidth = 0.8),
+        plot.margin = margin(b = 1.5, r = 0.35, unit = "cm")
+        #plot.margin = margin(b = 1, unit = "cm") #not needed when combined
+        ) +
+  scale_color_manual(values = c(pal_rd[7],pal_bl[7]))+
+  annotate("text", x = -7.5, y = -14-8, label = "True perceiver", size = 4) +
+  annotate("text", x = 9, y = -14-8, label = "Unsure perceiver",  size = 4) +
+  geom_segment(x = -0.5, xend = -12, y = -10-8, yend= -10-8, arrow = arrow(length = unit(4, "pt")), col = "black")+
+  geom_segment(x = 0.5, xend = 12, y = -10-8, yend=  -10-8, arrow = arrow(length = unit(4, "pt")), col = "black")+
+  coord_cartesian(ylim = c(-1, 60), clip = "off")
+
+plot_cor
+```
+# For the Subject level fits:
+```{r}
+ageDat <- df %>% 
+  group_by(subject) %>% 
+  summarise(PHS_all = sum(PHS))
+
+df1 = left_join(df, ageDat, by = c('subject'))
+
+winning_models = loos %>% 
+  filter(elpd_diff == 0) %>% 
+  select(model,age,id,pareto_k_over07) %>% 
+  dplyr::rename(winning_model = model)
+
+ss_param = inner_join(inner_join(individual_params,winning_models),df1 %>% 
+             select(subject,PHS_all) %>% 
+               distinct()) %>%  
+  mutate(non_resp = ifelse(PHS_all == 0, 1, 0))
+
+non_resp_ids = unique(ss_param %>% filter(non_resp == 1) %>% .$subject)
+
+name_map <- c(
+  "mus_phs[1]" = "a_phs",
+  "mus_phs[2]" = "b_phs",
+  "mus_phs[3]" = "g_phs",
+  "mus_phs[4]" = "l_phs",
+  "mus_rt[1]" = "a_rt",
+  "mus_rt[2]" = "b_rt",
+  "mus_rt[3]" = "b1_rt",
+  "mus_rt[4]" = "sigma_rt",
+  "mus_rt[5]" = "ndt_uc",
+  "mus_conf[1]" = "a_conf",
+  "mus_conf[2]" = "b_conf",
+  "mus_conf[3]" = "b1_conf",
+  "mus_conf[4]" = "phi_conf",
+  "mus_conf[5]" = "c0_conf",
+  "mus_conf[6]" = "c1_conf"
+)
+
+# Replace values in the 'param' column
+ss_param <- ss_param %>%
+  mutate(variable = recode(variable, !!!name_map))
+```
+
+```{r}
+aphs_dat = ss_param %>% 
+  filter(model == winning_model & variable == "a_phs") %>% 
+  group_by(subject,PHS_all) %>% 
+  arrange(PHS_all) %>% 
+  mutate(subject = as.factor(subject))
+aphs_dat$count = 1:length(aphs_dat$subject)
+
+aphs_dat %>% 
+  ggplot(aes(y = count,
+             x = exp(mean)/100,
+             xmin = exp(q5)/100,#a_phs[, "lower"]/100,
+             xmax = exp(q95)/100,#a_phs[, "upper"]/100,
+             colour = as.factor(non_resp),
+             group = PHS_all)) +
+  geom_pointrange(shape = 20, size = 0.5, linewidth = 0.7, alpha = .7, show.legend = F) +
+  scale_colour_manual(labels = c('PHS responder', 'PHS non-responder'),
+                                 values = c(pal_rd[7], pal_bl[7])) +
+  scale_y_continuous(name = 'Total PHS per participant', breaks = c(12,75), labels = c('1','40')) +
+  scale_x_continuous(name = 'PHS threshold', limits = c(0,1.6),
+                     breaks = c(0,.5,1,1.5), labels = c('0','.5','1','1.5')) +
+  # facet_wrap(~variable)+
+  theme_classic() + 
+  theme(legend.position = 'none',
+        legend.title = element_blank(),
+        legend.text = element_text(size = 11),
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 11),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        panel.border = element_rect(fill = NA, linewidth = 1.2),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank()
+        ) -> aphs_plot
+
+
+group_aphs = aphs_dat %>% 
+  mutate(resp = (non_resp-1)*-1) %>% #changing around so non resp on the bottom
+  ggplot(aes(x = exp(mean)/100, y = as.factor(resp), fill = as.factor(resp), colour = as.factor(resp))) +
+    geom_density_ridges(scale = 0.95, rel_min_height = 0.009, alpha = .5)+
+    stat_summary(geom = "pointrange", linewidth = .75, size = .4) +
+    scale_fill_manual(labels = c('PHS non-responder', 'PHS responder'),
+                                 values = c(pal_bl[6], pal_rd[6]))+
+    scale_colour_manual(labels = c('PHS non-responder', 'PHS responder'),
+                                 values = c(pal_bl[7], pal_rd[7]))+
+    scale_x_continuous(name = 'PHS threshold', limits = c(-0.1,1.6),
+                     breaks = c(0,.5,1,1.5), labels = c('0','.5','1','1.5')) +
+    scale_y_discrete(expand = c(0.1,0), limits = c('0','1','2')) +
+    theme_classic()+
+    theme(legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    axis.title.x = element_text(size = 13,vjust = 0.05),
+    # axis.title.x = element_blank(),
+    axis.text = element_text(size = 11),
+    plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+    panel.border = element_rect(fill = NA, linewidth = 1.2),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.line.y = element_blank())
+
+aphs <- (aphs_plot / group_aphs + plot_layout(heights = c(4, 1)))
+aphs
+```
+
+
+```{r}
+b1rt_dat = ss_param %>% 
+  filter(model == winning_model & variable == "b1_rt") %>% 
+  group_by(subject,PHS_all) %>% 
+  arrange(PHS_all) %>% 
+  mutate(subject = as.factor(subject))
+b1rt_dat$count = 1:length(b1rt_dat$subject)
+  
+  
+b1rt_dat %>% ggplot(aes(y = count,
+             x = (mean),
+             xmin = (q5),#a_phs[, "lower"]/100,
+             xmax = (q95),#a_phs[, "upper"]/100,
+             colour = as.factor(non_resp),
+             group = PHS_all)) +
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 0.9) +
+  geom_pointrange(shape = 20, size = 0.5, linewidth = 0.7, alpha = .7, show.legend = F) +
+  scale_colour_manual(labels = c('PHS responder', 'PHS non-responder'),
+                                 values = c(pal_rd[7], pal_bl[7])) +
+  scale_y_continuous(name = 'Total PHS per participant', breaks = c(12,75), labels = c('1','40')) +
+  scale_x_continuous(name = '\u0394RT by TC', limits = c(-0.2,0.1), 
+                       breaks = c(-0.2,-0.1,0,0.1), labels = c('-0.2','-0.1','0','0.1')) +
+  theme_classic() + 
+  theme(legend.position = 'none',
+        legend.title = element_blank(),
+        legend.text = element_text(size = 11),
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 11),
+        axis.title.y = element_blank(),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        panel.border = element_rect(fill = NA, linewidth = 1.2),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank()) -> b1rt_plot
+
+group_b1rt = b1rt_dat %>% 
+  mutate(resp = (non_resp-1)*-1) %>% #changing around so non resp on the bottom
+  ggplot(aes(x = mean, y = as.factor(resp), fill = as.factor(resp), colour = as.factor(resp))) +
+    geom_density_ridges(scale = 0.95, rel_min_height = 0.01, alpha = .5)+
+    stat_summary(geom = "pointrange", linewidth = .75, size = .4) +
+    scale_fill_manual(labels = c('PHS non-responder', 'PHS responder'),
+                                 values = c(pal_bl[6], pal_rd[6]))+
+    scale_colour_manual(labels = c('PHS non-responder', 'PHS responder'),
+                                 values = c(pal_bl[7], pal_rd[7]))+
+    scale_x_continuous(name = '\u0394RT by TC', limits = c(-0.2,0.1), 
+                       breaks = c(-0.2,-0.1,0,0.1), labels = c('-0.2','-0.1','0','0.1')) +
+    scale_y_discrete(expand = c(0.1,0), limits = c('0','1','2')) +
+    theme_classic()+
+    theme(legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    axis.title.x = element_text(size = 13,vjust = 0.05),
+    # axis.title.x = element_blank(),
+    axis.text = element_text(size = 11),
+    plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+    panel.border = element_rect(fill = NA, linewidth = 1.2),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.line.y = element_blank())
+
+b1rt <- (b1rt_plot / group_b1rt + plot_layout(heights = c(4, 1)))
+b1rt
+```
+
+
+
+
+```{r}
+b1conf_dat = ss_param %>% 
+  filter(model == winning_model & variable == "b1_conf") %>% 
+  # mutate(mean = ifelse(subject == "sub-1001",NA,mean)) %>% 
+  group_by(subject,PHS_all) %>% 
+  arrange(PHS_all) %>% 
+  mutate(subject = as.factor(subject))
+
+b1conf_dat$count <- 1:length(b1conf_dat$subject)
+  
+b1conf_dat %>% ggplot(aes(y = count,
+             x = (mean),
+             xmin = (q5),#a_phs[, "lower"]/100,
+             xmax = (q95),#a_phs[, "upper"]/100,
+             colour = as.factor(non_resp),
+             group = PHS_all)) +
+  geom_vline(xintercept = 0, linetype = 2, linewidth = 0.9) +
+  geom_pointrange(shape = 20, size = 0.5, linewidth = 0.7, alpha = .7, show.legend = F) +
+  scale_colour_manual(labels = c('PHS responder', 'PHS non-responder'),
+                                 values = c(pal_rd[7], pal_bl[7])) +
+  scale_y_continuous(name = 'Total PHS per participant', breaks = c(12,74), labels = c('1','40')) +
+  scale_x_continuous(name = 'PHS threshold', limits = c(-0.1,2.5),
+                     breaks = c(0,1,2), labels = c('0','1','2')) +
+  theme_classic() + 
+  theme(legend.position = 'none',
+        legend.title = element_blank(),
+        legend.text = element_text(size = 11),
+        axis.title = element_text(size = 13),
+        # axis.title.x = element_blank(),
+        axis.text = element_text(size = 11),
+        axis.title.y = element_blank(),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        panel.border = element_rect(fill = NA, linewidth = 1.2),
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.line.x = element_blank()) -> b1conf_plot
+
+group_b1conf = b1conf_dat %>% 
+  mutate(resp = (non_resp-1)*-1) %>% #changing around so non resp on the bottom
+  ggplot(aes(x = mean, y = as.factor(resp), fill = as.factor(resp), colour = as.factor(resp))) +
+    geom_density_ridges(scale = 0.95, rel_min_height = 0.01, alpha = .5)+
+    stat_summary(geom = "pointrange", linewidth = .75, size = .4) +
+    scale_fill_manual(labels = c('PHS non-responder', 'PHS responder'),
+                                 values = c(pal_bl[6], pal_rd[6]))+
+    scale_colour_manual(labels = c('PHS non-responder', 'PHS responder'),
+                                 values = c(pal_bl[7], pal_rd[7]))+
+    scale_x_continuous(name = '\u0394Confidence by TC', limits = c(-0.1,2.5),
+                     breaks = c(0,1,2), labels = c('0','1','2')) +
+    scale_y_discrete(expand = c(0.1,0), limits = c('0','1','2')) +
+    theme_classic()+
+    theme(legend.position = "bottom",
+    legend.title = element_blank(),
+    legend.text = element_text(size = 11),
+    axis.title.x = element_text(size = 13,vjust = 0.05),
+    # axis.title.x = element_blank(),
+    axis.text = element_text(size = 11),
+    plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+    panel.border = element_rect(fill = NA, linewidth = 1.2),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    axis.line.y = element_blank())
+
+b1conf <- (b1conf_plot / group_b1conf + plot_layout(heights = c(4, 1)))
+b1conf
+
+```
+
+
+
+
+# Arrange all
+
+
+```{r}
+fig6.1 <- (plot_model1 / plot_cor + plot_layout(heights = c(1, 1)))+
+  plot_annotation(tag_levels = list(c("A.", "B.")))&
+    theme(plot.tag = element_text(face = "bold"),
+        plot.tag.position = c(0,0.97))
+
+fig6.1
+
+
+fig6.2 = (aphs | b1rt | b1conf)+
+  plot_annotation(title = "Effects of Thermal Contrast (TC)")+
+  plot_layout(widths = c(1.1,1, 1),
+              heights = c(1.1,1.1,1.1),
+              guides = "collect") & 
+  plot_annotation(tag_levels = list(c("C."))) &
+  theme(plot.tag = element_text(face = "bold"),
+        plot.tag.position = c(0,1.0255),
+        legend.position = "bottom",
+        plot.title = element_text(size = 13, hjust = 0.5, vjust = -1.5, face = 'bold')
+        )
+  
+
+
+
+figure6 = (wrap_elements(fig6.1) | wrap_elements(fig6.2)) + 
+  plot_layout(widths = c(1,2))
+  # plot_annotation(tag_levels = list(c("A.", "B.","C."))) &
+  # theme(plot.tag = element_text(face = "bold"),
+  #       plot.tag.position = c(0,0.97))
+# 
+#                     ncol = 3, nrow = 1,
+#                     widths = c(1.1,1,1),
+#                     common.legend = TRUE,
+#                     legend = 'bottom'
+# 
+# fig6.2 <- ggarrange(aphs,b1rt,b1conf,
+#                     ncol = 3, nrow = 1,
+#                     widths = c(1.1,1,1),
+#                     common.legend = TRUE,
+#                     legend = 'bottom'
+#                     )
+# fig6.2
+# 
+# figure6 <- ggarrange(fig6.1, NA, fig6.2,
+#                      ncol = 3, nrow = 1,
+#                      widths =c(0.75,.02,1.2)
+#                      #labels = c('A.',"",'B.')
+#                      )
+# figure6
+
+ggsave(file.path(here::here('manuscript','figures',"supplementary", 'S2_outlier.png')), figure6, device = NULL,
+       width = 9.5, height = 8, dpi = 600)
+```

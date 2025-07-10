@@ -1,0 +1,272 @@
+---
+title: "Figure 5"
+author: "A.G. Mitchell"
+date: "2025-05-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Load packages and functions
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(bayesplot, brms, cmdstanr, gghalves, ggpol, ggpubr,
+                 gridExtra, wesanderson, RColorBrewer, Rmisc, 
+                 readr, cowplot, patchwork, tidyverse)
+  
+# functions
+functions = list.files(file.path(here::here("analysis","functions")), full.names = TRUE)
+sapply(functions, source)
+```
+
+# Load data and models
+
+# Load models:
+```{r}
+# Retrieve the OSF authentication token if the file exists
+osf_file_path <- here::here("osf","osf.txt")
+
+if (file.exists(osf_file_path)) {
+  osf_token <- read_lines(osf_file_path)[1]
+} else {
+  stop("OSF token file does not exist!")
+}
+
+get_models(osf_token)
+
+model1 <- readRDS(here::here("saved_stanmodels","model1.rds"))
+model2 <- readRDS(here::here("saved_stanmodels","model2.rds"))
+
+```
+
+```{r load_data}
+#df <- read_csv("/mnt/slow_scratch/ageing-and-neuropathy/phs-ageing_compiled-filtered.csv")
+df <- read_csv(file.path(here::here("data", "phs-ageing_compiled-filtered.csv"))) %>% filter(catch == 0)
+
+pal_pg <- brewer.pal(11, 'PRGn') # purple
+pal_gr <- brewer.pal(9, 'Greens') #green
+pal_pu <- brewer.pal(9, 'BuPu') 
+```
+
+# Select subjects and generate model predictions of theese
+
+```{r}
+selected_subs = c("12","33","42","71")
+
+# age group 1, 2, 3, 4
+subject_draws = as_draws_df(model2$draws(c("a_phs","b_phs","g_phs","l_phs",
+                                           "a_rt","b_rt","b1_rt","ndt",
+                                           "a_conf","b_conf","b1_conf"))) %>% 
+                select(-contains("."))
+
+#get 200 random ids for the draws we select to plot.
+draw_id = sample(1:4000,4000)
+
+params_subj = subject_draws %>% 
+  mutate(draw = 1:n()) %>% 
+  filter(draw %in% draw_id) %>% 
+  pivot_longer(-draw) %>%  
+  mutate(
+    subject = str_extract(name, "\\[\\d+\\]") %>% str_remove_all("\\[|\\]"),
+    name = str_remove(name, "\\s*\\[\\d+\\]")) %>% 
+      filter(subject %in% selected_subs) %>% 
+  pivot_wider(names_from = "name",values_from = "value")
+
+params_subj = inner_join(params_subj,
+                df %>%
+                  mutate(subject = as.character(as.numeric(as.factor(subject)))) %>%
+                  select(subject,age) %>% distinct()) %>%
+  filter(subject %in% selected_subs)
+
+
+params_fixed <- params_subj %>%
+  group_by(subject) %>%
+  mutate(x = list(seq(0, 100, by = 1))) %>%
+  unnest(x) %>%
+  mutate(
+    p = prob_func(x, a_phs, b_phs, g_phs, l_phs)) %>% 
+  mutate(
+    rtP = a_rt+b_rt*(p) + b1_rt * x + ndt,
+    cP = (a_conf+b_conf*(p) + b1_conf * x)
+         ) %>% 
+  mutate(
+    rt = exp(rtP),
+    conf = brms::inv_logit_scaled(cP) * 100
+  )
+
+logitF <- function(p){
+  log(p/(1-p))
+      }
+```
+
+# Generate three different plots for P(PHS) response time and confidence ratings
+
+```{r, fig.height=7.2,fig.width=4}
+ages = as_labeller(c(`26` = "P1: 26 yo", `44` = "P2: 44 yo",`63` = "P3: 63 yo", 
+       `74` = "P4: 74 yo"))
+
+prob = params_fixed %>%
+  filter(subject %in% selected_subs) %>% 
+  group_by(x,age,subject) %>%
+  summarise(
+    mean = mean(p),
+    q5 = quantile(p, 0.05),
+    q95 = quantile(p, 0.95),
+    q10 = quantile(p, 0.10),
+    q90 = quantile(p, 0.90),
+    q20 = quantile(p, 0.20),
+    q80 = quantile(p, 0.80),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = x/100, y = mean, color = as.factor(age), fill = as.factor(age))) +
+  geom_point(data = df %>%
+               mutate(more = NA, range_type = NA, 
+                      subject = as.character(as.numeric(as.factor(subject))))  %>%     
+               filter(subject %in% selected_subs),
+               aes(x = TC/100, y = PHS), 
+             show.legend = F, shape = 21, size = 2, alpha = 0.4) +
+  geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.1, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.25, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q20, ymax = q80), alpha = 0.4, color = NA, show.legend = F) +
+  geom_line(linewidth = 1.5) +
+  scale_colour_manual(name = 'Age', values = c(pal_pu[4], pal_pu[6], pal_pu[8], pal_pu[9])) +
+  scale_fill_manual(name = 'Age', values = c(pal_pu[4], pal_pu[6], pal_pu[8], pal_pu[9])) +
+  scale_x_continuous(name = '', breaks = c(0,0.5,1.0), labels = c("0",".5","1"))+
+  scale_y_continuous(name = "P(PHS)", limits = c(0,1), breaks = c(0,.5,1),
+                     labels = c("  0","  .5","  1"))+
+  facet_grid(cols = vars(as.factor(age)), labeller = ages) +
+  theme_classic() +
+  theme(legend.position = 'none',
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        axis.title = element_text(size = 13),
+        axis.title.x = element_blank(),
+        axis.text = element_text(size = 11),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12, face = 'bold'),
+        panel.border = element_rect(fill = NA, linewidth = 1.2)
+        )
+
+
+plot_df = inner_join(
+  params_fixed %>% select(subject,ndt) %>% 
+    group_by(subject) %>% 
+    summarize(ndt = mean(ndt)) %>% 
+    distinct(),
+  df %>% 
+    mutate(more = NA,range_type = NA,subject = as.character(as.numeric(as.factor(subject)))) %>% 
+    select(subject,tempRT,TC,age)
+) %>% mutate(RT = tempRT-ndt) %>% mutate(age = as.factor(as.character(age)))
+
+
+
+
+rt = params_fixed %>%
+  filter(subject %in% selected_subs) %>% 
+  group_by(x,age,subject) %>%
+  summarise(
+    mean = mean(rtP),
+    q5 = quantile(rtP, 0.05),
+    q95 = quantile(rtP, 0.95),
+    q10 = quantile(rtP, 0.10),
+    q90 = quantile(rtP, 0.90),
+    q20 = quantile(rtP, 0.20),
+    q80 = quantile(rtP, 0.80),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = x/100, y = mean, color = as.factor(age), fill = as.factor(age))) +
+  geom_point(data = plot_df  %>%
+               filter(subject %in% selected_subs), 
+             aes(x = TC/100, y = log(RT)), 
+             show.legend = F, alpha = 0.4, shape = 21, size = 2)+
+  geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.1, colour = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.25, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q20, ymax = q80), alpha = 0.4, color = NA, show.legend = F) +
+  geom_line(linewidth = 1.5) +
+  scale_colour_manual(name = 'Age', values = c(pal_pu[4], pal_pu[6], pal_pu[8], pal_pu[9])) +
+  scale_fill_manual(name = 'Age', values = c(pal_pu[4], pal_pu[6], pal_pu[8], pal_pu[9])) +
+  scale_x_continuous(breaks = c(0,0.5,1.0), labels = c("0",".5","1"))+
+  scale_y_continuous(name = "Log response time", limits = c(-3,3), breaks = c(-2,0,2),
+                     labels = c(" -2"," 0"," 2"))+
+  facet_grid(cols = vars(age)) +
+  theme_classic() +
+  labs(color = "Type", fill = "Type") +
+  theme(legend.position = 'none',
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        axis.title = element_text(size = 13),
+        axis.title.x = element_blank(),
+        axis.text = element_text(size = 11),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        panel.border = element_rect(fill = NA, linewidth = 1.2)
+        )
+
+conf = params_fixed %>%
+  filter(subject %in% selected_subs) %>% 
+  group_by(x,subject,age) %>%
+  summarise(
+    mean = mean(conf),
+    q5 = quantile(conf, 0.05),
+    q95 = quantile(conf, 0.95),
+    q10 = quantile(conf, 0.10),
+    q90 = quantile(conf, 0.90),
+    q20 = quantile(conf, 0.20),
+    q80 = quantile(conf, 0.80),
+    .groups = "drop"
+  ) %>%
+  ggplot(aes(x = x/100, y = mean, color = as.factor(age), fill = as.factor(age))) +
+  geom_point(data = df %>% mutate(more = NA,range_type = NA,
+                                  subject = as.character(as.numeric(as.factor(subject))),
+                                  tConf = case_when(
+                                    vasRating == 100 ~ .9999,
+                                    vasRating == 0 ~ .0001,
+                                    vasRating < 100 & vasRating > 0 ~ vasRating/100),
+                                  tConf = logitF(tConf)
+                                  )  %>%
+               filter(subject %in% selected_subs), 
+             aes(x = TC/100, y = vasRating), 
+             show.legend = F, alpha = 0.4, shape = 21, size = 2)+
+  geom_ribbon(aes(ymin = q5, ymax = q95), alpha = 0.1, colour = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q10, ymax = q90), alpha = 0.25, color = NA, show.legend = F) +
+  geom_ribbon(aes(ymin = q20, ymax = q80), alpha = 0.4, color = NA, show.legend = F) +
+  geom_line(linewidth = 1.5) +
+  scale_colour_manual(name = 'Age', values = c(pal_pu[4], pal_pu[6], pal_pu[8], pal_pu[9])) +
+  scale_fill_manual(name = 'Age', values = c(pal_pu[4], pal_pu[6], pal_pu[8], pal_pu[9])) +
+  scale_x_continuous(name = 'Thermal contrast', breaks = c(0,0.5,1.0), labels = c("0",".5","1"))+
+  scale_y_continuous(name = 'Confidence (VAS)') +
+  facet_grid(cols = vars(age)) +
+  theme_classic() +
+  theme(legend.position = 'none',
+        legend.title = element_blank(),
+        legend.text = element_text(size = 10),
+        axis.title = element_text(size = 13),
+        axis.text = element_text(size = 11),
+        plot.title = element_text(size = 13, hjust = 0.5, face = 'bold'),
+        strip.background = element_blank(),
+        strip.text = element_blank(),
+        panel.border = element_rect(fill = NA, linewidth = 1.2)
+        )
+```
+
+# put it all together and save
+
+```{r}
+figure5 <- (prob / rt / conf + plot_layout(heights = c(1,1,1)))
+figure5
+
+ggsave(file.path(here::here('manuscript','figures', 'figure5.png')), figure5, device = NULL,
+       width = 8, height = 7, dpi = 600)
+
+
+# ggsave(file.path(here::here('manuscript','figures', 'figure5.tiff')), figure5, device = NULL,
+#        width = 8, height = 7.5, dpi = 600)
+```
+
+
+

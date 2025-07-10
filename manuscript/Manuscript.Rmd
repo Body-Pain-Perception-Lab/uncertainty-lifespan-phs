@@ -1,0 +1,115 @@
+---
+title: "Modelling perceptual uncertainty in a thermosensory illusion across the lifespan"
+author: 
+- Jesper Fischer Ehmsen^1\*^, Alexandra G. Mitchell^1\*^, Arthur S. Courtin^1,2^,
+- Camilla E. Krænge^1^, Cyprien Simonnet^3^ & Francesca Fardo^1,4^
+output:
+  pdf_document:
+    latex_engine: xelatex
+  html_document:
+    df_print: paged
+  word_document:
+    reference_docx: Knitting files/docx_template.docx
+fontsize: 12pt
+header-includes:
+   - \usepackage{caption}
+   - \captionsetup[figure]{font=small}
+   - \captionsetup{labelfont=bf}
+bibliography: 
+  - "Knitting files/proj-ageing-phs.bib"
+link-citations: true
+linkcolor: blue
+csl: Knitting files/nature.csl
+always_allow_html: true
+---
+
+::: {custom-style="Title text"}
+(1) Center of Functionally Integrative Neuroscience (CFIN), Department of Clinical Medicine, Aarhus University, Denmark
+
+(2) Institute of Neuroscience (IoNS), Universite Catholique de Louvain, Belgium
+
+(3) Faculty of Science and Engineering, Université Toulouse III - Paul Sabatier, France
+
+(4) Danish Pain Research Center, Department of Clinical Medicine, Aarhus University, Denmark
+
+##
+
+^\*^ indicates equal contributions
+
+Corresponding authors: Francesca Fardo (francesca@cfin.au.dk) & Alexandra G. Mitchell (agmitchell@cfin.au.dk)
+:::
+
+```{r load packages, warning = F, message = F, echo = F, include=FALSE}
+knitr::opts_chunk$set(dpi=600)
+# seed
+set.seed(123)
+# packages
+if (!require("pacman")) install.packages("pacman")
+pacman::p_load("renv", "here", "knitr","yaml","cowplot","magick","tidyverse","flextable","weights")
+knitr::opts_chunk$set(echo = TRUE)
+detach("package:renv", unload = T)
+```
+
+
+```{r knitter_ops, warning = F, message = F, echo = F}
+#get the users knitting
+knit = knitr::opts_knit$get("rmarkdown.pandoc.to")
+```
+
+\newpage
+
+# Abstract
+
+Most studies of perceptual illusions rely on explicit reports alone, offering a limited view into the computations that underlie ambiguous sensory experiences. Here, we introduce a multivariate computational approach to model paradoxical heat sensation (PHS), a thermosensory illusion in which skin cooling evokes sensations of warmth, as an individual-specific process. We tested 75 healthy adults (aged 21–80) using a perceptual decision-making task with stimuli designed to elicit PHS. Binary perceptual choices, response times and confidence ratings were jointly analysed using hierarchical multivariate Bayesian modelling to characterise PHS at both the population and individual levels across the lifespan. We tested two distinct perceptual profiles: “true perceivers”, who experience PHS similarly to a veridical warm percept; and “unsure perceivers”, who perceive PHS as an ambiguous experience. At the group level, behaviour was best explained by the unsure perceiver model, suggesting that PHS is often an uncertain experience, rather than a categorical misperception. At the individual level, however, both profiles were represented, with considerable inter-individual variability in model fit. Older participants were more likely to report PHS and did so at lower levels of thermal contrast, but we observed no correlation between age and perceptual profile. This suggests that while ageing increases the likelihood of experiencing PHS, it does not alter the qualitative nature of its perception. These findings also show how multivariate modelling of perceptual, decisional and metacognitive responses can reveal distinct, subjective profiles and their variation across individuals and age.
+
+
+## Keywords
+Computational modelling; Bayesian modelling; Multivariate behavioural analysis; Perceptual illusions; Paradoxical Heat Sensation; Thermosensation; Ageing.
+
+
+\newpage
+
+# Introduction
+```{r child-intro, child = "Introduction.Rmd"}
+```
+
+
+\newpage
+
+# Results
+
+```{r child-results, child = "Results.Rmd"}
+```
+
+\newpage
+# Discussion
+
+```{r child-discussion, child = "Discussion.Rmd"}
+```
+
+\newpage
+
+
+# Methods
+
+```{r child-methods, child = "Methods.Rmd"}
+```
+
+\newpage
+
+# References
+
+::: {#refs}
+:::
+
+
+\newpage
+
+## **Acknowledgements**
+We would like to thank Johanne Sejrskild Rejsenhus for her help with data collection and Dr. Camila Sardeto Deolindo for her contribution to the thermal thresholding procedure.
+
+**Funding:** This work was supported by the European Research Council (ERC-2020-StG-948838) and the Lundbeck Foundation (R436-2023-991).
+
+**Author contributions:** Conceptualisation: J.F.E., A.G.M. & F.F. Methodology: A.G.M., C.E.K. & F.F. Investigation: J.F.E., A.G.M., C.E.K., A.S.C. & F.F. Data analysis: J.F.E., A.G.M., A.S.C. & C.S. Visualisation: J.F.E., A.G.M. & F.F. Writing - original draft: J.F.E., A.G.M. & F.F. Writing - review & editing: J.F.E., A.G.M., C.E.K., A.S.C.& F.F. Supervision: F.F.
+
+**Competing interests:** The authors declare that they have no competing interests.

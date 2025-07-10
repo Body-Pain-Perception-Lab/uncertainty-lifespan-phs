@@ -1,0 +1,39 @@
+---
+title: "Figure 3"
+author: "A.G. Mitchell"
+date: "2025-05-23"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+
+# Packages and data
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+# Load required packages
+if (!require("pacman")) install.packages("pacman")
+  pacman::p_load(bayesplot, brms, cmdstanr, gghalves, ggpol, ggpubr,
+                 gridExtra, wesanderson, RColorBrewer, Rmisc, cowplot,tidyverse)
+
+ageDat <- read.csv(here::here(file.path("data","phs-ageing_compiled-filtered.csv"))) %>% filter(catch == 0)
+
+```
+
+
+# Gather Demographic information and save the object.
+```{r}
+N = length(unique(ageDat$subject))
+
+gen_F = ageDat %>% dplyr::filter(gender == "F") %>% dplyr::select(gender,subject) %>% distinct() %>% dplyr::summarize(n = n()) %>% .$n
+
+age = ageDat %>% summarize(mean = mean(age), min = min(age), max = max(age)) %>%  mutate(across(where(is.numeric), \(x) round(x, 2)))
+
+p_PHS = round(sum(ageDat %>% drop_na() %>% .$PHS == 1)/nrow(ageDat %>% drop_na()),2)
+
+save.image(here::here("manuscript","objects","demo.RData"))
+
+```
+
+
